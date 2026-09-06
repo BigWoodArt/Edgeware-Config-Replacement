@@ -1,13 +1,16 @@
 Edgeware++ Pretty Configuration Manager v5
 
-INSTALL
+---WHAT IT DOES---
+This config.pyw replaces the current config file in Edgeware++'s current release to make it prettier. It should have the same capabilities, plus a few new ones. Namely, it allows you to select themes and select packs without restarting the whole window. There's also a WEBP-to-GIF converter. Sometimes WEBP files show up black on Edgeware, so this built-in converter will fix those images. 
+
+---INSTALL---
 1. Open your EdgewarePlusPlus-21\edgeware folder.
 2. Back up your existing config.pyw (for example: config_original.pyw).
 3. Replace config.pyw with the config.pyw in this ZIP.
 4. Do not replace Edgeware's other source files manually.
 5. Run config.pyw normally.
 
-WHAT IS NEW IN v5
+---WHAT IS NEW IN v5---
 - Renamed "Allow buttonless popups" to "Force buttonless popups". The underlying Edgeware setting is unchanged.
 - Removed the non-functional Edgeware Appearance control from the Start page. Manager Appearance remains available and only changes the configuration manager.
 - Improved the light manager themes (Original and Bimbo) so the main window, navigation, fields, scrollbars, and comboboxes use the selected light palette instead of leaving dark controls behind.
@@ -26,12 +29,12 @@ WHAT IS NEW IN v5
 PANIC WALLPAPER
 The manager writes the selected panic wallpaper to data\panic_wallpaper.png, which matches Edgeware's CustomAssets panic-wallpaper path. A backup named panic_wallpaper.before_pretty_v5.bak is made before replacing an existing custom wallpaper.
 
-GIF QUALITY
-GIF is inherently limited to 256 colors and will not be as faithful as WebP. The included converter uses a shared animation palette to reduce frame-to-frame color flicker and performs conversion in the background with progress and cancellation.
-
 EDGEWARE THEME BACKGROUND
 The Troubleshooting tab still includes the separate "Fix Edgeware theme background" compatibility tool from v4. It patches src\features\popup.py only when the installed file matches the expected layout and keeps a .before_pretty_v5.bak backup. Restart Edgeware after applying it. This is separate from Manager Appearance.
 
+---GIF CONVERTER---
+GIF QUALITY
+GIF is inherently limited to 256 colors and will not be as faithful as WebP. The included converter uses a shared animation palette to reduce frame-to-frame color flicker and performs conversion in the background with progress and cancellation.
 SAFETY
 The WebP converter changes the selected pack permanently and deletes each WebP only after a successful GIF is written.
 The Panic Wallpaper tool changes data\panic_wallpaper.png and keeps a backup before replacement.
