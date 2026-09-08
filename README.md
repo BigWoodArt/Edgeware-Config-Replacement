@@ -1,4 +1,4 @@
-Edgeware++ Pretty Configuration Manager v5
+Edgeware++ Pretty Configuration Manager v6
 
 ---WHAT IT DOES---
 This config.pyw replaces the current config file in Edgeware++'s current release to make it prettier. It should have the same capabilities, plus a few new ones. Namely, it allows you to select themes and select packs without restarting the whole window. There's also a WEBP-to-GIF converter. Sometimes WEBP files show up black on Edgeware, so this built-in converter will fix those images. 
