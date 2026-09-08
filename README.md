@@ -10,6 +10,14 @@ This config.pyw replaces the current config file in Edgeware++'s current release
 4. Do not replace Edgeware's other source files manually.
 5. Run config.pyw normally.
 
+---WHAT IS NEW IN v6---
+- Added a DO NOT PRESS button that will cause the program to run on startup after a varying hibernation time. Warnings and descriptions appear on first press. Be careful!
+- There’s now a selection of PACK PRIORITY vs DEFAULT PRIORITY. This setting determines which settings take place during the session- the pack’s or config’s.
+- Greyed out child settings when parent settings are turned OFF.
+- Several bug fixes including save issues.
+
+
+
 ---WHAT IS NEW IN v5---
 - Renamed "Allow buttonless popups" to "Force buttonless popups". The underlying Edgeware setting is unchanged.
 - Removed the non-functional Edgeware Appearance control from the Start page. Manager Appearance remains available and only changes the configuration manager.
