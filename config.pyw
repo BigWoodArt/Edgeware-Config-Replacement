@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP = "Edgeware++ Configuration"
-VERSION = "21-pretty.2"  # this tool's own version marker, not Edgeware++'s version
+VERSION = "21.0.9"  # this tool's own version marker, not Edgeware++'s version
 DO_NOT_PRESS_KEY = "_doNotPressArmed"
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -86,17 +86,17 @@ CRIMSON = "#DC143C"  # Do Not Press / Arm it buttons specifically - deeper than 
 BASE = {
     "bg": "#100C16", "panel": "#17111F", "panel2": "#1E1628", "panel3": "#261A31",
     "border": "#382544", "accent": "#C51F4A", "accent2": "#7B3FE4", "accent_dark": "#8E1637",
-    "white": "#F8F5FA", "muted": "#B9AFBF", "dim": "#817588", "danger": "#FF667F",
+    "white": "#F8F5FA", "muted": "#B9AFBF", "dim": "#817588", "disabled": "#382544", "danger": "#FF667F",
     "entry": "#0D0912", "trough": "#2B1D35",
 }
 THEME_PALETTES = {
     "Crimson/Violet": BASE,
-    "Original": {**BASE, "bg":"#ECE9EE", "panel":"#F5F3F6", "panel2":"#FFFFFF", "panel3":"#E4DFE8", "border":"#CBC4D0", "accent":"#9E1D3E", "accent2":"#6630B7", "accent_dark":"#7E1732", "white":"#201A24", "muted":"#625A67", "dim":"#817787", "entry":"#FFFFFF", "trough":"#C9C2CC"},
-    "Dark": {**BASE, "bg":"#1B1E24", "panel":"#22262E", "panel2":"#2A2F38", "panel3":"#343A45", "border":"#414854", "accent":"#C51F4A", "accent2":"#7B3FE4", "accent_dark":"#8E1637", "white":"#F5F5F7", "muted":"#B9BDC5", "dim":"#858B96", "entry":"#171A20", "trough":"#343A45"},
-    "The One": {**BASE, "bg":"#101812", "panel":"#172119", "panel2":"#1E2B21", "panel3":"#293A2D", "border":"#395340", "accent":"#C51F4A", "accent2":"#4D9B68", "accent_dark":"#8E1637", "white":"#F3F8F4", "muted":"#B7C5BA", "dim":"#7F9183", "entry":"#0D130E", "trough":"#304537"},
-    "Ransom": {**BASE, "bg":"#180D0D", "panel":"#251111", "panel2":"#321717", "panel3":"#452020", "border":"#663333", "accent":"#E33A3A", "accent2":"#C98530", "accent_dark":"#9E2222", "white":"#FFF6F6", "muted":"#D3B6B6", "dim":"#967878", "entry":"#100707", "trough":"#4C2525"},
-    "Goth": {**BASE, "bg":"#110D16", "panel":"#1C1622", "panel2":"#261D2E", "panel3":"#34253F", "border":"#513B60", "accent":"#C51F4A", "accent2":"#A55BD0", "accent_dark":"#8E1637", "white":"#F7F0FA", "muted":"#C2B6C8", "dim":"#8E7D98", "entry":"#0C0910", "trough":"#3A2945"},
-    "Bimbo": {**BASE, "bg":"#FFF0F4", "panel":"#FFE0E8", "panel2":"#FFF7F9", "panel3":"#F5C5D3", "border":"#D99BAD", "accent":"#B43A72", "accent2":"#9A55B8", "accent_dark":"#8D2858", "white":"#321724", "muted":"#70485A", "dim":"#946F7E", "entry":"#FFFFFF", "trough":"#E8B4C5"},
+    "Original": {**BASE, "bg":"#ECE9EE", "panel":"#F5F3F6", "panel2":"#FFFFFF", "panel3":"#E4DFE8", "border":"#CBC4D0", "accent":"#9E1D3E", "accent2":"#6630B7", "accent_dark":"#7E1732", "white":"#201A24", "muted":"#625A67", "dim":"#817787", "disabled":"#CBC4D0", "entry":"#FFFFFF", "trough":"#C9C2CC"},
+    "Dark": {**BASE, "bg":"#1B1E24", "panel":"#22262E", "panel2":"#2A2F38", "panel3":"#343A45", "border":"#414854", "accent":"#C51F4A", "accent2":"#7B3FE4", "accent_dark":"#8E1637", "white":"#F5F5F7", "muted":"#B9BDC5", "dim":"#858B96", "disabled":"#414854", "entry":"#171A20", "trough":"#343A45"},
+    "The One": {**BASE, "bg":"#101812", "panel":"#172119", "panel2":"#1E2B21", "panel3":"#293A2D", "border":"#395340", "accent":"#C51F4A", "accent2":"#4D9B68", "accent_dark":"#8E1637", "white":"#F3F8F4", "muted":"#B7C5BA", "dim":"#7F9183", "disabled":"#395340", "entry":"#0D130E", "trough":"#304537"},
+    "Ransom": {**BASE, "bg":"#180D0D", "panel":"#251111", "panel2":"#321717", "panel3":"#452020", "border":"#663333", "accent":"#E33A3A", "accent2":"#C98530", "accent_dark":"#9E2222", "white":"#FFF6F6", "muted":"#D3B6B6", "dim":"#967878", "disabled":"#663333", "entry":"#100707", "trough":"#4C2525"},
+    "Goth": {**BASE, "bg":"#110D16", "panel":"#1C1622", "panel2":"#261D2E", "panel3":"#34253F", "border":"#513B60", "accent":"#C51F4A", "accent2":"#A55BD0", "accent_dark":"#8E1637", "white":"#F7F0FA", "muted":"#C2B6C8", "dim":"#8E7D98", "disabled":"#513B60", "entry":"#0C0910", "trough":"#3A2945"},
+    "Bimbo": {**BASE, "bg":"#FFF0F4", "panel":"#FFE0E8", "panel2":"#FFF7F9", "panel3":"#F5C5D3", "border":"#D99BAD", "accent":"#B43A72", "accent2":"#9A55B8", "accent_dark":"#8D2858", "white":"#321724", "muted":"#70485A", "dim":"#946F7E", "disabled":"#D99BAD", "entry":"#FFFFFF", "trough":"#E8B4C5"},
 }
 
 # (key, label, explanation, type, choices)
@@ -345,11 +345,20 @@ def apply_startup_toggle(enabled):
         sys.path.insert(0, src_path)
     # os_utils.windows imports the mpv Python binding at module level (for
     # unrelated features bundled in that file), which needs libmpv's DLL
-    # folder on PATH to resolve - main_edgeware.py and panic.py already do
+    # folder findable to resolve - main_edgeware.py and panic.py already do
     # this before touching anything mpv-related; config.pyw never needed to
     # until this function started importing os_utils.
     if str(DATA) not in os.environ.get("PATH", ""):
         os.environ["PATH"] += os.pathsep + str(DATA)
+    try:
+        # PATH alone isn't reliably picked up by ctypes-based DLL loading on
+        # Windows since Python 3.8 ("safe DLL search mode") - this is the
+        # actually-reliable way to point it at libmpv-2.dll. Kept the PATH
+        # line above too since it's harmless and may still help in some
+        # setups; this is the one that actually matters on modern Python.
+        os.add_dll_directory(str(DATA))
+    except (AttributeError, OSError):
+        pass  # Not on Windows, or the directory doesn't exist yet
     import os_utils
     os_utils.toggle_run_at_startup(bool(enabled))
 
@@ -1095,7 +1104,7 @@ class App:
                 orig=getattr(lbl,"_orig_fg",None)
                 if orig is None:
                     orig=lbl.cget("fg"); lbl._orig_fg=orig
-                try: lbl.configure(fg=(orig if enabled else self.palette["dim"]))
+                try: lbl.configure(fg=(orig if enabled else self.palette["disabled"]))
                 except tk.TclError: pass
             _input(enabled)
         self.row_widgets[key]=set_row_enabled
@@ -1232,7 +1241,7 @@ class App:
     def add_percent(self,parent,key):
         var=tk.IntVar(value=max(0,min(100,int(self.cfg.get(key,0)))))
         row=tk.Frame(parent,bg=self.palette["panel2"]); row.pack()
-        entry=tk.Entry(row,textvariable=var,width=5,justify="center",bg=self.palette["entry"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat",highlightthickness=1,highlightbackground=self.palette["border"],font=("Segoe UI",10))
+        entry=tk.Entry(row,textvariable=var,width=5,justify="center",bg=self.palette["entry"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat",highlightthickness=1,highlightbackground=self.palette["border"],font=("Segoe UI",10),disabledbackground=self.palette["panel3"],disabledforeground=self.palette["disabled"])
         entry.pack(side="right",padx=(5,0))
         scale_frame=tk.Frame(row,bg=self.palette["border"],highlightthickness=0,padx=1,pady=1)
         scale_frame.pack(side="left")
@@ -1277,7 +1286,7 @@ class App:
 
     def add_entry(self,parent,key,typ):
         var=tk.StringVar(value=self.raw_value(key,typ))
-        entry=tk.Entry(parent,textvariable=var,width=18,bg=self.palette["entry"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat",highlightthickness=1,highlightbackground=self.palette["border"],font=("Segoe UI",10))
+        entry=tk.Entry(parent,textvariable=var,width=18,bg=self.palette["entry"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat",highlightthickness=1,highlightbackground=self.palette["border"],font=("Segoe UI",10),disabledbackground=self.palette["panel3"],disabledforeground=self.palette["disabled"])
         entry.pack()
         var.trace_add("write",lambda *_:self.sync_setting(key,var,typ))
         self.vars[key]=(var,typ)
@@ -1325,7 +1334,7 @@ class App:
             style=ttk.Style(self.root)
             style.theme_use("clam")
             style.configure("Pretty.TCombobox",fieldbackground=p["entry"],background=p["panel3"],foreground=p["white"],arrowcolor=p["white"],bordercolor=p["border"],lightcolor=p["border"],darkcolor=p["border"])
-            style.map("Pretty.TCombobox",fieldbackground=[("readonly",p["entry"])],foreground=[("readonly",p["white"])])
+            style.map("Pretty.TCombobox",fieldbackground=[("readonly",p["entry"]),("disabled",p["panel3"])],foreground=[("readonly",p["white"]),("disabled",p["disabled"])],arrowcolor=[("disabled",p["disabled"])])
             style.configure("Pretty.Vertical.TScrollbar",background=p["panel3"],troughcolor=p["panel"],arrowcolor=p["white"],bordercolor=p["border"],lightcolor=p["border"],darkcolor=p["border"])
             style.configure("Pretty.Horizontal.TProgressbar",background=p["accent2"],troughcolor=p["trough"],bordercolor=p["border"],lightcolor=p["accent2"],darkcolor=p["accent2"])
         except Exception:
