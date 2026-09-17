@@ -1,19 +1,37 @@
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
 import threading
+import urllib.request
+import webbrowser
+from datetime import datetime
 from queue import Queue, Empty
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP = "Edgeware++ Configuration"
-VERSION = "21.0.9"  # this tool's own version marker, not Edgeware++'s version
+VERSION = "21.2.9"  # this tool's own version marker, not Edgeware++'s version
+# Points at this fork, not the original Araten/EdgewarePlusPlus repo - the
+# old config_original.pyw's legacy update-check still (deliberately) checks
+# upstream, since that's faithful to the original tool's behavior. This one
+# checks our own repo since it's tracking our own version scheme.
+#
+# v21 build note: the update check below is disabled (see
+# check_for_updates_async's call site) rather than repointed. These URLs
+# track BigWoodArt/Edgeware-Unofficial-v22's own "22.x.x" version scheme,
+# which this build's "21.x.x" scheme will never compare correctly against -
+# it would permanently nag about an "update" that is actually an
+# incompatible v22 build. Left in place only in case a future v21-specific
+# releases feed shows up to point these at instead.
+UPDATE_CHECK_URL = "https://raw.githubusercontent.com/BigWoodArt/Edgeware-Unofficial-v22/main/edgeware/config.pyw"
+UPDATE_RELEASES_URL = "https://github.com/BigWoodArt/Edgeware-Unofficial-v22"
 DO_NOT_PRESS_KEY = "_doNotPressArmed"
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -47,6 +65,25 @@ PRETTY_DEFAULTS = {
     "_priorityMode": "Pack Priority",
 }
 INVERTED_BOOL_KEYS = {"corruptionWallpaperCycle", "corruptionThemeCycle"}
+# Every site the "booru" package supports, minus Lolibooru - matches the same
+# list (and the same exclusion) in features/image_popup.py exactly.
+ALLOWED_BOORU_SITES = sorted({
+    "Atfbooru", "Behoimi", "Danbooru", "Derpibooru", "E621", "E926", "Furbooru",
+    "Gelbooru", "Hypnohub", "Konachan", "Konachan_Net", "Paheal", "Realbooru",
+    "Rule34", "Safebooru", "Tbib", "Xbooru", "Yandere",
+})
+# Sites actually rebuilt with the real scraper (see booru_scraper.py in src) -
+# matches that module's GELBOORU_FAMILY_DOMAINS keys exactly. Everything else
+# in ALLOWED_BOORU_SITES still uses the older JSON-API-only approach, which
+# may or may not currently work for any given one of them - shown dimmed as
+# a "not guaranteed yet" reminder, not disabled, since they might still work
+# fine and are worth testing. Paheal deliberately isn't in this set despite
+# initially being assumed to be - it turned out to run a different engine
+# entirely (Shimmie2), not the same one as the other sites here.
+GELBOORU_FAMILY_SITES = {
+    "Atfbooru", "Behoimi", "Gelbooru", "Hypnohub", "Realbooru",
+    "Rule34", "Safebooru", "Tbib", "Xbooru",
+}
 
 # Parent -> [children] for graying out settings whose parent is off/zero.
 # Two flavors: most parents are plain bools (0/1); the five in
@@ -69,6 +106,7 @@ PARENT_CHILD = {
     "fill": ["fill_delay", "drivePath", "avoidList"],
     "replace": ["replaceThresh", "drivePath", "avoidList"],
     "timerMode": ["timerSetupTime", "safeword"],
+    "downloadEnabled": ["tagList", "booruMinScore", "booruName"],
     "movingChance": ["movingSpeed"],
     "capPopChance": ["capPopTimer", "capPopOpacity"],
     "subliminalsChance": ["subliminalsAlpha"],
@@ -124,7 +162,7 @@ SECTIONS = {
     ],
     "Popup Details": [
         ("showCaptions", "Show captions", "Lets image popups display their captions.", "bool", None),
-        ("denialChance", "Popup denial chance", "Chance that a popup refuses to close normally.", "pct", None),
+        ("denialChance", "Popup denial chance", "Chance that a popup shows a blurred or pixelated image with teasing text over it, instead of showing normally. Does not affect how the popup closes.", "pct", None),
         ("buttonless", "Force buttonless popups", "Removes the normal close button from popups. Clicking the popup itself closes it instead.", "bool", None),
         ("multiClick", "Require multiple clicks", "Some popups may require more than one click before they close.", "bool", None),
         ("lkScaling", "Popup size", "General popup size. 100 is normal size.", "pct", None),
@@ -135,14 +173,16 @@ SECTIONS = {
         ("clickthroughPopups", "Allow clicks through popups", "Makes popup windows ignore mouse clicks.", "bool", None),
         ("fadeInDuration", "Fade in time", "How long popups take to appear, in milliseconds.", "ms", None),
         ("fadeOutDuration", "Fade out time", "How long popups take to disappear, in milliseconds.", "ms", None),
+        ("notificationChance", "Notification chance", "Chance from 0 to 100 that Edgeware creates a system-style notification.", "pct", None),
+        ("notificationImageChance", "Notification image chance", "Chance from 0 to 100 that a notification includes an image.", "pct", None),
+        ("promptMistakes", "Prompt mistakes allowed", "How many wrong answers can be entered before a prompt changes behavior.", "int", None),
+    ],
+    "Hypnotics": [
         ("capPopChance", "Subliminal caption chance", "Chance from 0 to 100 that brief caption messages appear.", "pct", None),
         ("capPopTimer", "Subliminal message time", "How long a subliminal caption stays visible.", "sec", None),
         ("capPopOpacity", "Subliminal caption opacity", "How visible subliminal captions are, from 0 to 100.", "pct", None),
         ("subliminalsChance", "Subliminals chance", "Chance from 0 to 100 that a visual overlay is put over an image.", "pct", None),
         ("subliminalsAlpha", "Image overlay opacity", "How strong the visual overlay is, from 0 to 100.", "pct", None),
-        ("notificationChance", "Notification chance", "Chance from 0 to 100 that Edgeware creates a system-style notification.", "pct", None),
-        ("notificationImageChance", "Notification image chance", "Chance from 0 to 100 that a notification includes an image.", "pct", None),
-        ("promptMistakes", "Prompt mistakes allowed", "How many wrong answers can be entered before a prompt changes behavior.", "int", None),
     ],
     "Wallpaper": [
         ("rotateWallpaper", "Change wallpaper", "Allow Edgeware to rotate or change the desktop wallpaper.", "bool", None),
@@ -152,6 +192,8 @@ SECTIONS = {
     "Internet": [
         ("downloadEnabled", "Allow online image downloads", "Allows Edgeware to download images from its configured online source.", "bool", None),
         ("tagList", "Online image tags", "Words used when choosing online images.", "text", None),
+        ("booruMinScore", "Minimum score", "Skips results scoring below this. Can be negative. Not every site's scoring is equally reliable - this is best-effort, not a hard guarantee.", "signed_int", None),
+        ("booruName", "Site to search", "Which site to download from. v21's downloader only supports one site at a time (unlike the multi-site random-pick this row offered in a later build) - matches Edgeware's actual booruName setting. Not every listed site has been confirmed working - see the Troubleshooting tab's booru test tool if downloads from a chosen site aren't working.", "choice", ALLOWED_BOORU_SITES),
     ],
     "Modes": [
         ("lkToggle", "Low-key mode", "Keeps activity concentrated in one corner of the screen.", "bool", None),
@@ -237,6 +279,7 @@ DESCRIPTIONS = {
     "Start":"The few things you should decide before running Edgeware.",
     "Popups":"How often Edgeware throws different kinds of things onto the screen.",
     "Popup Details":"Smaller rules that change what individual popups do.",
+    "Hypnotics":"Subliminal captions, the image-overlay spiral effect, and the optional full-screen spiral/binaural layer.",
     "Wallpaper":"How Edgeware handles your desktop wallpaper.",
     "Internet":"Features that need an internet connection.",
     "Modes":"Optional behavior that changes how Edgeware acts.",
@@ -307,6 +350,76 @@ INTENSITY_PRESETS = [
         "mitosisMode": 1, "mitosisStrength": 3, "hibernateMode": 0,
     }),
 ]
+
+
+def parse_version(v):
+    """'22.1.0' -> (22,1,0); tolerates a trailing '_something' suffix like the
+    old config UI's version string did. Returns None if unparseable, so
+    callers can skip comparison instead of crashing on a weird value."""
+    try:
+        return tuple(int(p) for p in v.split("_")[0].split("."))
+    except Exception:
+        return None
+
+
+def fetch_live_version():
+    """Best-effort fetch of the VERSION string from this fork's own repo.
+    Never raises - network failure, timeout, or a missing/renamed VERSION
+    line should just mean 'couldn't check', not a crash or a popup."""
+    try:
+        with urllib.request.urlopen(UPDATE_CHECK_URL, timeout=5) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+        match = re.search(r'VERSION\s*=\s*"([^"]+)"', text)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
+def _test_one_booru_site(site, tags, min_score, api_key, user_id, booru_scraper_mod, booru_pkg_mod, asyncio_mod):
+    """One real, minimal (limit=1) request through whichever code path a real
+    download would actually use for this site - booru_scraper for the 9
+    rebuilt Gelbooru-family sites, the third-party "booru" package for
+    everything else. Returns (kind, detail) where kind is "ok" (got a
+    result), "empty" (reached the site fine, just no matching result - not
+    necessarily broken, could just be the tags), or "fail" (an actual
+    exception - detail is the exception type/message, which for HTTP
+    failures usually includes the status code, e.g. what would tell us
+    Gelbooru wants auth or a site is dead server-side)."""
+    # The "booru" package's own idiom for zero results, confirmed against
+    # its source (utils/fetch.py, client/furbooru.py, client/paheal.py):
+    # raises a bare Exception or ValueError carrying this exact message,
+    # instead of returning an empty list. Caught a real run classifying
+    # these as FAIL when they're really the same thing as booru_scraper's
+    # "empty" case - not broken, just nothing matched these tags/score.
+    NO_RESULTS_MESSAGE = "no results, make sure you spelled everything right"
+    try:
+        if site in GELBOORU_FAMILY_SITES:
+            url = next(booru_scraper_mod.search_gelbooru_family(site, tags, min_score, limit=1, api_key=api_key, user_id=user_id), None)
+            return ("ok", url) if url else ("empty", "no results for these tags/score")
+        else:
+            site_obj = getattr(booru_pkg_mod, site)()
+            raw = asyncio_mod.run(site_obj.search(query=tags, limit=1))
+            results = booru_pkg_mod.resolve(raw)
+            return ("ok", f"{len(results)} result(s) via the booru package") if results else ("empty", "no results for these tags/score")
+    except Exception as e:
+        if NO_RESULTS_MESSAGE in str(e):
+            return ("empty", "no results for these tags/score (booru package raises rather than returning empty)")
+        return ("fail", f"{type(e).__name__}: {e}")
+
+
+def _save_booru_test_log(results, tags, min_score):
+    log_dir = DATA / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"booru_site_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    lines = [
+        f"Edgeware++ booru site test - {datetime.now().isoformat(timespec='seconds')}",
+        f'tags="{tags}"  min_score={min_score}',
+        "",
+    ]
+    for site, kind, detail in results:
+        lines.append(f"[{kind.upper():5}] {site:14} {detail}")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def load_json(path, fallback=None):
@@ -682,6 +795,7 @@ def read_pack_overrides(pack_name):
             if typ=="bool": value=1 if truth(value) else 0
             elif typ=="pct": value=max(0,min(100,int(value)))
             elif typ in ("ms","sec","min","int"): value=max(0,int(value))
+            elif typ=="signed_int": value=int(value)
             # choice/edge_theme/corner/hibernate/text/global_key/multiline: shown as-is
         except Exception:
             continue
@@ -718,8 +832,8 @@ class App:
         self.cfg.setdefault("_prettyConfigTheme", "Crimson/Violet")
         self.root = tk.Tk()
         self.root.title(f"{APP} - v{VERSION}")
-        self.root.geometry("1060x700")
-        self.root.minsize(900, 600)
+        self.root.geometry("1060x800")
+        self.root.minsize(900, 680)
         self.vars = {}
         self.row_widgets = {}
         self.current_section = "Start"
@@ -733,6 +847,29 @@ class App:
         self.refresh_packs()
         self.render(self.current_section)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        # Disabled for the v21 build - see the UPDATE_CHECK_URL/
+        # UPDATE_RELEASES_URL comment near the top of this file for why.
+        # self.check_for_updates_async()
+
+    def check_for_updates_async(self):
+        """Non-blocking - runs the network check off the main thread so a
+        slow/unreachable connection can't freeze the GUI on startup, then
+        hands the result back via root.after() to touch widgets safely."""
+        def worker():
+            live_version = fetch_live_version()
+            self.root.after(0, lambda: self.show_update_notice(live_version))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_update_notice(self, live_version):
+        local_v = parse_version(VERSION)
+        live_v = parse_version(live_version) if live_version else None
+        if not (local_v and live_v and live_v > local_v):
+            return  # up to date, or couldn't check - stay silent, no nag
+        self.subtitle.config(
+            text=f"CONFIGURATION MANAGER  ·  v{VERSION}  ·  UPDATE AVAILABLE: v{live_version} (click)",
+            fg=self.palette["accent"], cursor="hand2",
+        )
+        self.subtitle.bind("<Button-1>", lambda e: webbrowser.open(UPDATE_RELEASES_URL))
 
     def build_shell(self):
         self.root.configure(bg=self.palette["bg"])
@@ -836,7 +973,7 @@ class App:
             b.configure(bg=self.palette["accent_dark"] if name==active else self.palette["panel"],fg=self.palette["white"] if name==active else self.palette["muted"],activebackground=self.palette["accent_dark"] if name==active else self.palette["panel3"])
 
     def raw_value(self,key,typ):
-        v=self.cfg.get(key,0 if typ in ("bool","pct","int","ms","sec","min") else "")
+        v=self.cfg.get(key,0 if typ in ("bool","pct","int","ms","sec","min","signed_int") else "")
         if typ=="bool":
             result = truth(v)
             return (not result) if key in INVERTED_BOOL_KEYS else result
@@ -913,7 +1050,19 @@ class App:
             if not self.save(True): return
             win.grab_release(); win.destroy()
             self.render(self.current_section)
-            messagebox.showinfo(APP,"Armed. This takes effect the next time Edgeware starts.")
+            if "Couldn't update the Windows Startup shortcut" in self.status.get():
+                # The whole point of this feature is "this happens without you
+                # needing to check on it" - a failure here can't be allowed to
+                # hide behind a confident "Armed" dialog while the real detail
+                # sits in a status-bar note underneath it. Do Not Press is
+                # everything-but-the-startup-shortcut armed right now: Panic
+                # Lockout and the random-pack behavior are saved and will work
+                # the next time Edgeware runs manually, but it will NOT
+                # automatically start at the next Windows login until this is
+                # resolved.
+                messagebox.showwarning(APP,"Armed, but the Windows Startup shortcut could not be created:\n\n"+self.status.get().split("Couldn't update the Windows Startup shortcut: ",1)[-1].rstrip(")")+"\n\nEverything else is armed (Panic Lockout, safeword, random pack on next run) - but Edgeware will NOT automatically start at your next Windows login until this is fixed. Try running Edgeware from a folder that isn't inside OneDrive, or check that this program can write to your Startup folder.")
+            else:
+                messagebox.showinfo(APP,"Armed. This takes effect the next time Edgeware starts.")
         self.make_button(btns,"Cancel",lambda:(win.grab_release(),win.destroy())).pack(side="left",padx=6)
         tk.Button(btns,text="Arm it",command=confirm,relief="flat",bd=0,padx=16,pady=8,cursor="hand2",bg=CRIMSON,fg=self.palette["white"],activebackground=CRIMSON,activeforeground=self.palette["white"],font=("Segoe UI",11,"bold")).pack(side="left",padx=6)
 
@@ -1079,7 +1228,15 @@ class App:
             label=f"{label} ({UNIT_SUFFIX[typ]})"
         card=tk.Frame(self.page,bg=self.palette["panel2"],highlightthickness=1,highlightbackground=self.palette["border"])
         card.pack(fill="x",padx=14,pady=3)
-        left=tk.Frame(card,bg=self.palette["panel2"]); left.pack(side="left",fill="both",expand=True,padx=10,pady=7)
+        # Every other input here is compact enough to sit beside the label in
+        # a narrow right-hand column - this one is a whole grid of checkboxes
+        # and needs the full card width instead, stacked below the label
+        # rather than squeezed beside it (that squeeze is what was pushing
+        # columns off past the visible window edge).
+        full_width=typ=="booru_sites"
+        left=tk.Frame(card,bg=self.palette["panel2"])
+        if full_width: left.pack(side="top",fill="x",padx=10,pady=(7,0))
+        else: left.pack(side="left",fill="both",expand=True,padx=10,pady=7)
         left_labels=[]
         l=tk.Label(left,text=label,bg=self.palette["panel2"],fg=self.palette["white"],font=("Segoe UI",10,"bold")); l.pack(anchor="w"); left_labels.append(l)
         l=tk.Label(left,text=helptext,bg=self.palette["panel2"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=560,justify="left"); l.pack(anchor="w",pady=(1,0)); left_labels.append(l)
@@ -1091,13 +1248,16 @@ class App:
             override_value=self.pack_overrides[key]
             display_value=("ON" if truth(override_value) else "OFF") if KEY_TYPES.get(key)=="bool" else override_value
             l=tk.Label(left,text=f"Pack default for this setting is {display_value}. Pack Priority is ON.",bg=self.palette["panel2"],fg=self.palette["accent2"],font=("Segoe UI",9,"bold"),wraplength=560,justify="left"); l.pack(anchor="w",pady=(2,0)); left_labels.append(l)
-        right=tk.Frame(card,bg=self.palette["panel2"]); right.pack(side="right",padx=10,pady=7)
+        right=tk.Frame(card,bg=self.palette["panel2"])
+        if full_width: right.pack(side="top",fill="x",padx=10,pady=(4,10))
+        else: right.pack(side="right",padx=10,pady=7)
         if typ=="bool": input_setter=self.add_bool(right,key)
         elif typ in ("choice","edge_theme","corner","hibernate"): input_setter=self.add_combo(right,key,typ,choices)
         elif typ=="pack": input_setter=self.add_pack(right,key)
         elif typ=="global_key": input_setter=self.add_global_key(right,key)
         elif typ=="pct": input_setter=self.add_percent(right,key)
         elif typ=="multiline": input_setter=self.add_multiline(right,key)
+        elif typ=="booru_sites": input_setter=self.add_site_checklist(right,key)
         else: input_setter=self.add_entry(right,key,typ)
         def set_row_enabled(enabled,_labels=left_labels,_input=input_setter):
             for lbl in _labels:
@@ -1162,6 +1322,8 @@ class App:
                 value=int(str(var.get()).strip())
                 if value<0: return
                 self.cfg[key]=value
+            elif typ=="signed_int":
+                self.cfg[key]=int(str(var.get()).strip())  # negative allowed - e.g. booru score thresholds
             else:
                 self.cfg[key]=var.get()
         except (ValueError,tk.TclError):
@@ -1262,6 +1424,43 @@ class App:
             except tk.TclError: pass
             try: scale.configure(state=st)
             except tk.TclError: pass
+        return set_enabled
+
+    def add_site_checklist(self,parent,key):
+        current={x.strip() for x in str(self.cfg.get(key,"")).split(",") if x.strip()}
+        grid=tk.Frame(parent,bg=self.palette["panel2"]); grid.pack(fill="x")
+        state={"enabled":True}
+        rows=[]  # (site, label_widget, BooleanVar)
+        def sync():
+            selected=sorted(site for site,_,var in rows if var.get())
+            self.cfg[key]=",".join(selected)
+        def make_flip(site,lbl,var):
+            def flip(*_):
+                if not state["enabled"]: return
+                var.set(not var.get())
+                lbl.configure(bg=self.palette["accent_dark"] if var.get() else self.palette["panel3"])
+                sync()
+            return flip
+        cols=6  # Now spans the full card width (see add_setting) instead of a narrow column, so this comfortably fits more per row
+        for i,site in enumerate(ALLOWED_BOORU_SITES):
+            var=tk.BooleanVar(value=site in current)
+            # Sites not yet rebuilt with the real scraper get dimmed text as a
+            # "not guaranteed working yet" reminder - still fully clickable
+            # (not disabled), since they might work fine and are worth
+            # testing; only the text color differs, nothing else.
+            text_color=self.palette["white"] if site in GELBOORU_FAMILY_SITES else self.palette["dim"]
+            lbl=tk.Label(grid,text=site,width=12,bg=self.palette["accent_dark"] if var.get() else self.palette["panel3"],fg=text_color,font=("Segoe UI",8,"bold"),cursor="hand2")
+            lbl.grid(row=i//cols,column=i%cols,padx=2,pady=2,sticky="w")
+            lbl.bind("<Button-1>",make_flip(site,lbl,var))
+            rows.append((site,lbl,var))
+        # Not a normal Variable-backed setting (no single Variable represents
+        # "which sites are checked") - self.cfg is kept current directly by
+        # sync() above on every click instead, same reasoning as add_multiline.
+        self.vars[key]=(None,"booru_sites")
+        def set_enabled(enabled):
+            state["enabled"]=enabled
+            for _,lbl,_ in rows:
+                lbl.configure(cursor="hand2" if enabled else "arrow")
         return set_enabled
 
     def add_multiline(self,parent,key):
@@ -1372,6 +1571,7 @@ class App:
                 self.cfg[key] = (1 - value) if key in INVERTED_BOOL_KEYS else value
             elif typ=="pct": self.cfg[key]=max(0,min(100,int(var.get())))
             elif typ=="multiline": pass  # Already kept current in self.cfg directly - see add_multiline
+            elif typ=="booru_sites": pass  # Already kept current in self.cfg directly - see add_site_checklist
             elif typ=="pack": self.cfg[key]=self.pack_map.get(var.get())
             elif typ=="corner": self.cfg[key]={"Top-Left":0,"Top-Right":1,"Bottom-Left":2,"Bottom-Right":3}.get(var.get(),0)
             elif typ=="global_key": self.cfg[key]=var.get()
@@ -1379,6 +1579,7 @@ class App:
                 value=int(str(var.get()).strip())
                 if value<0: raise ValueError(f"{key} cannot be negative.")
                 self.cfg[key]=value
+            elif typ=="signed_int": self.cfg[key]=int(str(var.get()).strip())
             elif typ=="edge_theme": self.cfg[key]=var.get()
             else: self.cfg[key]=var.get()
         self.cfg["_prettyConfigTheme"]=self.theme_name
@@ -1538,6 +1739,11 @@ class App:
         theme_btn=self.make_button(card,"Fix Edgeware theme background",self.fix_edgeware_theme_ui)
         theme_btn.pack(anchor="w",padx=10,pady=(0,8))
 
+        booru_card=tk.Frame(self.page,bg=self.palette["panel3"],highlightthickness=1,highlightbackground=self.palette["border"]); booru_card.pack(fill="x",padx=14,pady=7)
+        tk.Label(booru_card,text="Test Download Sites",bg=self.palette["panel3"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w",padx=10,pady=(7,1))
+        tk.Label(booru_card,text=f"Makes one real, minimal request to all {len(ALLOWED_BOORU_SITES)} known sites (not just the ones currently checked), using your saved tags/min score/API key - both the rebuilt sites and the dimmed \"not guaranteed yet\" ones. Shows which work, which return nothing for your tags, and which fail outright with the actual error - useful for spotting when a site starts needing something new (like Gelbooru's auth requirement).",bg=self.palette["panel3"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=650,justify="left").pack(anchor="w",padx=10,pady=(0,5))
+        self.make_button(booru_card,"Test all download sites",self.test_booru_sites_dialog,primary=True).pack(anchor="w",padx=10,pady=(0,8))
+
 
     def fix_edgeware_theme_ui(self):
         if not messagebox.askyesno(APP,"Apply the Edgeware theme background fix?\n\nThis makes popup windows use the selected Edgeware theme background instead of a hard-coded black background. A backup of popup.py will be kept before changing it."):
@@ -1548,6 +1754,111 @@ class App:
             self.status.set(message)
         except Exception as e:
             messagebox.showerror(APP,str(e))
+
+    def test_booru_sites_dialog(self):
+        if getattr(self,"booru_test_running",False): return
+        self.booru_test_running=True
+
+        src_path=str(HERE/"src")
+        if src_path not in sys.path: sys.path.insert(0,src_path)
+        try:
+            import asyncio as _asyncio
+            import booru as _booru_pkg
+            from features import booru_scraper as _booru_scraper
+        except Exception as e:
+            self.booru_test_running=False
+            messagebox.showerror(APP,f"Couldn't load the site-testing code.\n\n{e}")
+            return
+
+        tags=str(self.cfg.get("tagList","") or "all")
+        min_score=int(self.cfg.get("booruMinScore",-5) or -5)
+        api_key=str(self.cfg.get("booruApiKey","") or "")
+        user_id=str(self.cfg.get("booruUserId","") or "")
+        sites=ALLOWED_BOORU_SITES
+
+        cancel=threading.Event()
+        q=Queue()
+
+        win=tk.Toplevel(self.root)
+        win.title("Test Download Sites")
+        win.geometry("680x540")
+        win.transient(self.root); win.grab_set()
+        win.configure(bg=self.palette["bg"])
+        tk.Label(win,text="Test Download Sites",bg=self.palette["bg"],fg=self.palette["white"],font=("Segoe UI",14,"bold")).pack(anchor="w",padx=18,pady=(16,3))
+        tk.Label(win,text=f'Testing all {len(sites)} sites with tags "{tags}" (min score {min_score}). One real request per site - this can take a little while.',bg=self.palette["bg"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=640,justify="left").pack(anchor="w",padx=18,pady=(0,8))
+
+        log_frame=tk.Frame(win,bg=self.palette["bg"]); log_frame.pack(fill="both",expand=True,padx=18)
+        log_text=tk.Text(log_frame,bg=self.palette["panel"],fg=self.palette["white"],font=("Consolas",9),wrap="word",state="disabled",height=18,relief="flat")
+        log_scroll=ttk.Scrollbar(log_frame,orient="vertical",command=log_text.yview,style="Pretty.Vertical.TScrollbar")
+        log_text.configure(yscrollcommand=log_scroll.set)
+        log_text.pack(side="left",fill="both",expand=True); log_scroll.pack(side="right",fill="y")
+        log_text.tag_configure("ok",foreground="#4CD787")
+        log_text.tag_configure("empty",foreground="#E8C547")
+        log_text.tag_configure("fail",foreground="#E8546B")
+
+        def append_line(text,tag=None):
+            log_text.configure(state="normal")
+            log_text.insert("end",text+"\n",tag or ())
+            log_text.see("end")
+            log_text.configure(state="disabled")
+
+        status_label=tk.Label(win,text="Starting...",bg=self.palette["bg"],fg=self.palette["dim"],font=("Segoe UI",9))
+        status_label.pack(anchor="w",padx=18,pady=(6,0))
+
+        btn_row=tk.Frame(win,bg=self.palette["bg"]); btn_row.pack(pady=12)
+        cancel_btn=self.make_button(btn_row,"Cancel",cancel.set); cancel_btn.pack(side="left",padx=4)
+        save_btn=self.make_button(btn_row,"Save Full Log",lambda:None,primary=True); save_btn.config(state="disabled"); save_btn.pack(side="left",padx=4)
+
+        def worker():
+            results=[]
+            for i,site in enumerate(sites,1):
+                if cancel.is_set():
+                    q.put({"stage":"cancelled"}); return
+                q.put({"stage":"progress","site":site,"index":i,"total":len(sites)})
+                kind,detail=_test_one_booru_site(site,tags,min_score,api_key,user_id,_booru_scraper,_booru_pkg,_asyncio)
+                results.append((site,kind,detail))
+                q.put({"stage":"result","site":site,"kind":kind,"detail":detail})
+            q.put({"stage":"done","results":results})
+        threading.Thread(target=worker,daemon=True).start()
+
+        def finish_save(results):
+            try:
+                path=_save_booru_test_log(results,tags,min_score)
+                messagebox.showinfo(APP,f"Saved to:\n{path}")
+            except Exception as e:
+                messagebox.showerror(APP,str(e))
+
+        def poll():
+            try:
+                while True:
+                    info=q.get_nowait()
+                    stage=info.get("stage")
+                    if stage=="progress":
+                        status_label.config(text=f'Testing {info["site"]}... ({info["index"]}/{info["total"]})')
+                    elif stage=="result":
+                        marker={"ok":"[ OK  ]","empty":"[EMPTY]","fail":"[FAIL ]"}[info["kind"]]
+                        append_line(f'{marker} {info["site"]:14} {info["detail"]}',info["kind"])
+                    elif stage=="cancelled":
+                        status_label.config(text="Cancelled.")
+                        cancel_btn.config(state="disabled")
+                        self.booru_test_running=False
+                        return
+                    elif stage=="done":
+                        results=info["results"]
+                        ok_n=sum(1 for _,kind,_ in results if kind=="ok")
+                        status_label.config(text=f"Done - {ok_n}/{len(results)} sites returned a result.")
+                        cancel_btn.config(state="disabled")
+                        save_btn.config(state="normal",command=lambda:finish_save(results))
+                        self.booru_test_running=False
+                        return
+            except Empty:
+                pass
+            if not cancel.is_set(): win.after(80,poll)
+        poll()
+
+        def on_close():
+            cancel.set(); self.booru_test_running=False; win.destroy()
+        win.protocol("WM_DELETE_WINDOW",on_close)
 
     def open_root(self):
         try:
