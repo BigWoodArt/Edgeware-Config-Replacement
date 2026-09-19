@@ -13,23 +13,21 @@ import webbrowser
 from datetime import datetime
 from queue import Queue, Empty
 from pathlib import Path
+from types import SimpleNamespace
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP = "Edgeware++ Configuration"
-VERSION = "21.2.9"  # this tool's own version marker, not Edgeware++'s version
+VERSION = "21.2.19"  # this tool's own version marker, not Edgeware++'s version
 # Points at this fork, not the original Araten/EdgewarePlusPlus repo - the
 # old config_original.pyw's legacy update-check still (deliberately) checks
 # upstream, since that's faithful to the original tool's behavior. This one
 # checks our own repo since it's tracking our own version scheme.
 #
-# v21 build note: the update check below is disabled (see
-# check_for_updates_async's call site) rather than repointed. These URLs
-# track BigWoodArt/Edgeware-Unofficial-v22's own "22.x.x" version scheme,
-# which this build's "21.x.x" scheme will never compare correctly against -
-# it would permanently nag about an "update" that is actually an
-# incompatible v22 build. Left in place only in case a future v21-specific
-# releases feed shows up to point these at instead.
+# v21 build note: disabled below (see call site) rather than repointed -
+# these URLs track the v22 fork's "22.x.x" scheme, which this "21.x.x" build
+# would always compare as older against, permanently nagging about an
+# "update" that's actually an incompatible v22 build.
 UPDATE_CHECK_URL = "https://raw.githubusercontent.com/BigWoodArt/Edgeware-Unofficial-v22/main/edgeware/config.pyw"
 UPDATE_RELEASES_URL = "https://github.com/BigWoodArt/Edgeware-Unofficial-v22"
 DO_NOT_PRESS_KEY = "_doNotPressArmed"
@@ -143,7 +141,7 @@ SECTIONS = {
         ("themeType", "Edgeware appearance", "This controls Edgeware's popup/theme colors. Pick one and save; it is used the next time Edgeware starts. Original and Bimbo are light themes rather than the manager's dark theme.", "edge_theme", EDGEWARE_THEMES),
         ("packPath", "Pack to run", "Choose the pack folder from data\\packs. This is the pack Edgeware will use when it starts.", "pack", None),
         ("showLoadingFlair", "Show startup screen", "Show Edgeware's startup image when it begins.", "bool", None),
-        ("_priorityMode", "Priority", "When a pack's own config.json specifies settings (image/video/audio chance, corruption pacing, etc.) and they disagree with what's saved here: Pack Priority writes the pack's values into your saved config every time you press Save, so they're what Edgeware uses next time it runs. Default Priority ignores the pack and always saves what's shown here. Re-save after switching a pack or this setting to update which values are in effect.", "choice", ["Pack Priority","Default Priority"]),
+        ("_priorityMode", "Priority", "When a pack's own settings disagree with what's saved here: Pack Priority writes the pack's values in every time you Save, so they're what Edgeware uses next run. Default Priority always saves what's shown here instead. Re-save after switching packs or this setting to refresh it.", "choice", ["Pack Priority","Default Priority"]),
         ("globalPanicButton", "Global panic key", "The emergency key that should work even when another program has focus. Click Set Key, then press the key you want.", "global_key", None),
     ],
     "Popups": [
@@ -171,8 +169,8 @@ SECTIONS = {
         ("movingChance", "Moving popup chance", "Chance from 0 to 100 that a popup moves around the screen.", "pct", None),
         ("movingSpeed", "Moving popup speed", "How quickly moving popups travel.", "int", None),
         ("clickthroughPopups", "Allow clicks through popups", "Makes popup windows ignore mouse clicks.", "bool", None),
-        ("fadeInDuration", "Fade in time", "How long popups take to appear, in milliseconds.", "ms", None),
-        ("fadeOutDuration", "Fade out time", "How long popups take to disappear, in milliseconds.", "ms", None),
+        ("fadeInDuration", "Audio fade-in time", "How long a sound popup takes to fade up to full volume when it starts, in milliseconds. Doesn't affect image/video popups, which fade on their own fixed timer.", "ms", None),
+        ("fadeOutDuration", "Audio fade-out time", "How long a sound popup takes to fade out before it ends, in milliseconds. Doesn't affect image/video popups, which fade on their own fixed timer.", "ms", None),
         ("notificationChance", "Notification chance", "Chance from 0 to 100 that Edgeware creates a system-style notification.", "pct", None),
         ("notificationImageChance", "Notification image chance", "Chance from 0 to 100 that a notification includes an image.", "pct", None),
         ("promptMistakes", "Prompt mistakes allowed", "How many wrong answers can be entered before a prompt changes behavior.", "int", None),
@@ -193,7 +191,7 @@ SECTIONS = {
         ("downloadEnabled", "Allow online image downloads", "Allows Edgeware to download images from its configured online source.", "bool", None),
         ("tagList", "Online image tags", "Words used when choosing online images.", "text", None),
         ("booruMinScore", "Minimum score", "Skips results scoring below this. Can be negative. Not every site's scoring is equally reliable - this is best-effort, not a hard guarantee.", "signed_int", None),
-        ("booruName", "Site to search", "Which site to download from. v21's downloader only supports one site at a time (unlike the multi-site random-pick this row offered in a later build) - matches Edgeware's actual booruName setting. Not every listed site has been confirmed working - see the Troubleshooting tab's booru test tool if downloads from a chosen site aren't working.", "choice", ALLOWED_BOORU_SITES),
+        ("booruName", "Site to search", "Which site to download from. v21's downloader only supports one site at a time - matches Edgeware's actual booruName setting. Not every listed site has been confirmed working - see the Troubleshooting tab's booru test tool if downloads aren't working.", "choice", ALLOWED_BOORU_SITES),
     ],
     "Modes": [
         ("lkToggle", "Low-key mode", "Keeps activity concentrated in one corner of the screen.", "bool", None),
@@ -217,12 +215,12 @@ SECTIONS = {
         ("corruptionLaunches", "Launches needed", "For launch-triggered corruption, how many launches are needed.", "int", None),
         ("corruptionWallpaperCycle", "Cycle wallpapers with corruption", "Allows corruption to change wallpapers as it progresses.", "bool", None),
         ("corruptionThemeCycle", "Cycle themes with corruption", "Allows corruption to change themes as it progresses.", "bool", None),
-        ("corruptionPurityMode", "Corruption purity mode", "Restricts which moods can be used as corruption changes.", "bool", None),
+        ("corruptionPurityMode", "Corruption purity mode", "Runs corruption in reverse - starts at the highest level and decreases toward the lowest over time, instead of escalating from lowest to highest.", "bool", None),
         ("corruptionFullPerm", "Allow full corruption permissions", "Allows corruption to use settings that are normally protected.", "bool", None),
         ("corruptionDevMode", "Corruption dev mode", "Logs extra detail about corruption changes, and shows a system notification each time the corruption level actually changes (\"Corruption Level Increased to N\") - useful for checking a pack's corruption pacing without guessing.", "bool", None),
     ],
     "Scheduling": [
-        ("schedule", "Use a schedule", "Automatically start Edgeware according to a schedule.", "bool", None),
+        ("schedule", "Use a schedule", "Automatically start Edgeware using Windows Task Scheduler.", "bool", None),
         ("timeType", "Schedule unit", "Choose minutes, hours, or days.", "choice", ["Minutes", "Hours", "Days"]),
         ("scheduleTime", "Start after", "How long to wait before starting Edgeware.", "int", None),
         ("varianceTime", "Random extra time", "Adds a random amount of extra waiting time.", "int", None),
@@ -476,6 +474,57 @@ def apply_startup_toggle(enabled):
     os_utils.toggle_run_at_startup(bool(enabled))
 
 
+class _ScheduleValue:
+    """Tiny stand-in for a Tkinter Variable's .get() - os_utils.set_schedule()
+    was written for the original config UI, which passes it a "vars" object
+    of real Tkinter Variables. config.pyw keeps everything in a plain dict
+    instead, so this wraps a raw value just enough to satisfy that same
+    .get() interface without changing set_schedule() itself (which the
+    original UI still calls the exact same way)."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+
+def apply_schedule(cfg):
+    """Actually create/remove the Windows Task Scheduler entry for the
+    Scheduler feature. Saving the "schedule" key into config.json alone does
+    nothing - Edgeware's runtime never reads it either (this is a
+    config.pyw/original-UI-only feature, not a real Settings/Item, same
+    situation as apply_startup_toggle above). The original config window
+    only makes this work because it calls os_utils.set_schedule()/
+    delete_schedule() as a side effect of saving; config.pyw never did,
+    which is why toggling "Use a schedule" and saving previously did
+    nothing at all."""
+    src_path = str(HERE / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+    if str(DATA) not in os.environ.get("PATH", ""):
+        os.environ["PATH"] += os.pathsep + str(DATA)
+    try:
+        os.add_dll_directory(str(DATA))
+    except (AttributeError, OSError):
+        pass  # Not on Windows, or the directory doesn't exist yet
+    import os_utils
+
+    if truth(cfg.get("schedule", 0)):
+        vars = SimpleNamespace(
+            time_type=_ScheduleValue(cfg.get("timeType", "Hours")),
+            schedule_time=_ScheduleValue(int(cfg.get("scheduleTime", 1) or 0)),
+            repeat_schedule=_ScheduleValue(truth(cfg.get("repeatSchedule", 0))),
+            repeat_type=_ScheduleValue(cfg.get("repeatType", "Hours")),
+            repeat_time=_ScheduleValue(int(cfg.get("repeatTime", 0) or 0)),
+            variance_time=_ScheduleValue(int(cfg.get("varianceTime", 0) or 0)),
+            variance_type=_ScheduleValue(cfg.get("varianceType", "Hours")),
+        )
+        os_utils.set_schedule(vars)
+    else:
+        os_utils.delete_schedule()
+
+
 def safe_backup():
     if CONFIG.exists():
         stamp = "config.json.before_pretty_v5.bak"
@@ -673,14 +722,12 @@ def convert_webp_to_gif(pack_dir, progress=None, cancel_event=None):
     return converted
 
 
-# On Edgeware++ v21, both img-folder popups and hypno/subliminal overlays
-# hand their file straight to mpv unconditionally, and mpv cannot decode
-# animated WebP at all (ffmpeg's own WebP decoder skips the ANIM/ANMF
-# animation chunks and mpv just renders nothing / a black square). img-folder
-# popups only got a native, mpv-free path for animated WebP starting in v22,
-# so on v21 there is no folder where converting a GIF to WebP is safe. This
-# function is kept for reference but is not wired to a button in this v21
-# build - see convert_webp_to_gif for the direction that is actually offered.
+# On v21, both img-folder popups and hypno/subliminal overlays hand their
+# file straight to mpv unconditionally, and mpv cannot decode animated WebP
+# at all (renders as a black square). img-folder popups only got a native,
+# mpv-free path for animated WebP starting in v22, so on v21 there is no
+# folder where converting a GIF to WebP is safe. Kept for reference but not
+# wired to a button in this v21 build - see convert_webp_to_gif instead.
 HYPNO_FOLDER_NAMES = {"hypno", "subliminals"}
 
 
@@ -847,8 +894,7 @@ class App:
         self.refresh_packs()
         self.render(self.current_section)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        # Disabled for the v21 build - see the UPDATE_CHECK_URL/
-        # UPDATE_RELEASES_URL comment near the top of this file for why.
+        # Disabled for the v21 build - see UPDATE_CHECK_URL comment above.
         # self.check_for_updates_async()
 
     def check_for_updates_async(self):
@@ -961,6 +1007,8 @@ class App:
             if index in groups:
                 self.add_group_header(*groups[index])
             self.add_setting(key,label,helptext,typ,choices)
+            if key=="_priorityMode":
+                self.add_adopt_pack_settings_button()
         if section == "Wallpaper":
             self.add_panic_wallpaper_preview()
         if section == "Corruption Preview":
@@ -979,9 +1027,9 @@ class App:
             return (not result) if key in INVERTED_BOOL_KEYS else result
         if typ=="pack": return "Default pack" if not v else str(v)
         if typ=="corner":
-            names=["Top-Left","Top-Right","Bottom-Left","Bottom-Right"]
+            names=["Top-Right","Top-Left","Bottom-Left","Bottom-Right"]
             try:return names[max(0,min(3,int(v)))]
-            except:return "Top-Left"
+            except:return "Top-Right"
         if typ=="multiline": return "\n".join(str(v).split(">")) if v else ""
         return str(v)
 
@@ -1143,6 +1191,26 @@ class App:
             lines.append(f"Level {i}:  +{added or []}  -{removed or []}  wallpaper={wallpaper or 'none'}  config={config_change or '{}'}")
         text_widget.insert("1.0","\n".join(lines))
         text_widget.configure(state="disabled")
+
+    def add_adopt_pack_settings_button(self):
+        card=tk.Frame(self.page,bg=self.palette["panel2"],highlightthickness=1,highlightbackground=self.palette["border"])
+        card.pack(fill="x",padx=14,pady=3)
+        left=tk.Frame(card,bg=self.palette["panel2"]); left.pack(side="left",fill="both",expand=True,padx=10,pady=7)
+        tk.Label(left,text="Adopt this pack's settings as your default",bg=self.palette["panel2"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w")
+        tk.Label(left,text="Copies every setting the selected pack specifies into your own saved settings, so they stick even under Default Priority or with a different pack later.",bg=self.palette["panel2"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=560,justify="left").pack(anchor="w",pady=(1,0))
+        right=tk.Frame(card,bg=self.palette["panel2"]); right.pack(side="right",padx=10,pady=7)
+        self.make_button(right,"Adopt Pack Settings",self.adopt_pack_settings).pack()
+
+    def adopt_pack_settings(self):
+        overrides=getattr(self,"pack_overrides",{})
+        if not overrides:
+            messagebox.showinfo(APP,"The selected pack doesn't specify any settings of its own - nothing to adopt.")
+            return
+        if not messagebox.askyesno(APP,f"Copy this pack's {len(overrides)} setting(s) into your own saved settings?\n\nThis overwrites your current values for just those settings - everything else stays as it is. Save afterward to keep it."):
+            return
+        self.cfg.update(overrides)
+        self.status.set(f"Adopted {len(overrides)} setting(s) from the pack. Save to keep them.")
+        self.render(self.current_section)
 
     def add_panic_wallpaper_preview(self):
         card=tk.Frame(self.page,bg=self.palette["panel3"],highlightthickness=1,highlightbackground=self.palette["border"])
@@ -1317,7 +1385,7 @@ class App:
             elif typ=="pct":
                 self.cfg[key]=max(0,min(100,int(var.get())))
             elif typ=="corner":
-                self.cfg[key]={"Top-Left":0,"Top-Right":1,"Bottom-Left":2,"Bottom-Right":3}.get(var.get(),0)
+                self.cfg[key]={"Top-Right":0,"Top-Left":1,"Bottom-Left":2,"Bottom-Right":3}.get(var.get(),0)
             elif typ in ("int","ms","sec","min"):
                 value=int(str(var.get()).strip())
                 if value<0: return
@@ -1515,7 +1583,7 @@ class App:
         self.render(self.current_section)
 
     def corner_changed(self,key,value):
-        names={"Top-Left":0,"Top-Right":1,"Bottom-Left":2,"Bottom-Right":3}
+        names={"Top-Right":0,"Top-Left":1,"Bottom-Left":2,"Bottom-Right":3}
         self.cfg[key]=names[value]
 
     def hibernate_changed(self,value):
@@ -1556,6 +1624,7 @@ class App:
             b.configure(bg=p["accent"] if b.cget("text")=="Save, Exit, and Run" else p["panel3"],fg=p["white"],activebackground=p["accent2"],activeforeground=p["white"])
         self.content.configure(bg=p["panel"],highlightbackground=p["border"])
         self.canvas.configure(bg=p["panel"])
+        self.page.configure(bg=p["panel"])
         self.render(self.current_section)
 
     def manager_theme_changed(self,value):
@@ -1573,7 +1642,7 @@ class App:
             elif typ=="multiline": pass  # Already kept current in self.cfg directly - see add_multiline
             elif typ=="booru_sites": pass  # Already kept current in self.cfg directly - see add_site_checklist
             elif typ=="pack": self.cfg[key]=self.pack_map.get(var.get())
-            elif typ=="corner": self.cfg[key]={"Top-Left":0,"Top-Right":1,"Bottom-Left":2,"Bottom-Right":3}.get(var.get(),0)
+            elif typ=="corner": self.cfg[key]={"Top-Right":0,"Top-Left":1,"Bottom-Left":2,"Bottom-Right":3}.get(var.get(),0)
             elif typ=="global_key": self.cfg[key]=var.get()
             elif typ in ("int","ms","sec","min"):
                 value=int(str(var.get()).strip())
@@ -1584,14 +1653,11 @@ class App:
             else: self.cfg[key]=var.get()
         self.cfg["_prettyConfigTheme"]=self.theme_name
         self.cfg["_configVersion"]=VERSION
-        # Edgeware++ v21 has no runtime equivalent of a per-launch pack-priority
-        # merge (that only exists starting in v22's main_edgeware.py). To give
-        # "Pack Priority" real effect on v21, bake the selected pack's own
-        # config.json values into what actually gets written here - the same
-        # thing the old "Load Pack Configuration" button used to do, just
-        # automatically, every time you Save while Pack Priority is selected.
-        # Switching to Default Priority and saving again restores whatever
-        # values are currently showing in this window.
+        # v21 has no runtime equivalent of a per-launch pack-priority merge
+        # (that's a v22-only main_edgeware.py feature). To give "Pack
+        # Priority" real effect here, bake the pack's own values into what
+        # gets saved - the same thing the old "Load Pack Configuration"
+        # button did, just automatically, every time you Save.
         if self.cfg.get("_priorityMode","Pack Priority")!="Default Priority":
             self.cfg.update(read_pack_overrides(self.cfg.get("packPath")))
 
@@ -1605,6 +1671,10 @@ class App:
             apply_startup_toggle(truth(self.cfg.get("start_on_logon",0)))
         except Exception as e:
             note=f" (Couldn't update the Windows Startup shortcut: {e})"
+        try:
+            apply_schedule(self.cfg)
+        except Exception as e:
+            note+=f" (Couldn't update the Windows scheduled task: {e})"
         self.status.set("Saved."+note)
         if not quiet: messagebox.showinfo(APP,"Settings saved."+note)
         return True
@@ -1734,7 +1804,7 @@ class App:
         self.tool_added=True
         card=tk.Frame(self.page,bg=self.palette["panel3"],highlightthickness=1,highlightbackground=self.palette["border"]); card.pack(fill="x",padx=14,pady=7)
         tk.Label(card,text="WebP conversion",bg=self.palette["panel3"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w",padx=10,pady=(7,1))
-        tk.Label(card,text="This version of Edgeware hands every popup (image or hypno/subliminal overlay) straight to mpv, and mpv cannot decode animated WebP at all - it renders as a black square wherever it appears in a pack. This tool converts a pack's animated WebP files to GIF, which plays correctly everywhere. It shows progress and only removes each original file after its GIF is created successfully. (Converting GIFs to WebP is intentionally not offered here, since it would reintroduce the same black-square problem on this version.)",bg=self.palette["panel3"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=650,justify="left").pack(anchor="w",padx=10,pady=(0,5))
+        tk.Label(card,text="This version of Edgeware sends every popup (image or hypno/subliminal overlay) through mpv, which can't play animated WebP anywhere - it shows as a black square. This tool converts a pack's animated WebP files to GIF, which plays correctly everywhere. Progress shown; originals removed only after their GIF is created successfully. (GIF-to-WebP isn't offered here, since it would reintroduce the black-square problem on this version.)",bg=self.palette["panel3"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=650,justify="left").pack(anchor="w",padx=10,pady=(0,5))
         self.make_button(card,"Convert selected pack's WebP files to GIF",self.convert_webp_ui,primary=True).pack(anchor="w",padx=10,pady=(0,6))
         theme_btn=self.make_button(card,"Fix Edgeware theme background",self.fix_edgeware_theme_ui)
         theme_btn.pack(anchor="w",padx=10,pady=(0,8))
