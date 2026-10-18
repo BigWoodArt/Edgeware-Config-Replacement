@@ -1,11 +1,14 @@
+import importlib.metadata
+import importlib.util
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import traceback
 import zipfile
 import threading
 import urllib.request
@@ -18,19 +21,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP = "Edgeware++ Configuration"
-VERSION = "21.2.19"  # this tool's own version marker, not Edgeware++'s version
-# Points at this fork, not the original Araten/EdgewarePlusPlus repo - the
-# old config_original.pyw's legacy update-check still (deliberately) checks
-# upstream, since that's faithful to the original tool's behavior. This one
-# checks our own repo since it's tracking our own version scheme.
-#
-# v21 build note: disabled below (see call site) rather than repointed -
-# these URLs track the v22 fork's "22.x.x" scheme, which this "21.x.x" build
-# would always compare as older against, permanently nagging about an
-# "update" that's actually an incompatible v22 build.
-UPDATE_CHECK_URL = "https://raw.githubusercontent.com/BigWoodArt/Edgeware-Unofficial-v22/main/edgeware/config.pyw"
-UPDATE_RELEASES_URL = "https://github.com/BigWoodArt/Edgeware-Unofficial-v22"
-DO_NOT_PRESS_KEY = "_doNotPressArmed"
+VERSION = "21.1.2"  # v21 edition: built from the v22.3.6 config, limited to what stock Edgeware++ v21 supports
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 CONFIG = DATA / "config.json"
@@ -60,29 +51,8 @@ PRETTY_DEFAULTS = {
     "webMod": 0,
     "subliminalsChance": 100,
     "notificationChance": 100,
-    "_priorityMode": "Pack Priority",
 }
 INVERTED_BOOL_KEYS = {"corruptionWallpaperCycle", "corruptionThemeCycle"}
-# Every site the "booru" package supports, minus Lolibooru - matches the same
-# list (and the same exclusion) in features/image_popup.py exactly.
-ALLOWED_BOORU_SITES = sorted({
-    "Atfbooru", "Behoimi", "Danbooru", "Derpibooru", "E621", "E926", "Furbooru",
-    "Gelbooru", "Hypnohub", "Konachan", "Konachan_Net", "Paheal", "Realbooru",
-    "Rule34", "Safebooru", "Tbib", "Xbooru", "Yandere",
-})
-# Sites actually rebuilt with the real scraper (see booru_scraper.py in src) -
-# matches that module's GELBOORU_FAMILY_DOMAINS keys exactly. Everything else
-# in ALLOWED_BOORU_SITES still uses the older JSON-API-only approach, which
-# may or may not currently work for any given one of them - shown dimmed as
-# a "not guaranteed yet" reminder, not disabled, since they might still work
-# fine and are worth testing. Paheal deliberately isn't in this set despite
-# initially being assumed to be - it turned out to run a different engine
-# entirely (Shimmie2), not the same one as the other sites here.
-GELBOORU_FAMILY_SITES = {
-    "Atfbooru", "Behoimi", "Gelbooru", "Hypnohub", "Realbooru",
-    "Rule34", "Safebooru", "Tbib", "Xbooru",
-}
-
 # Parent -> [children] for graying out settings whose parent is off/zero.
 # Two flavors: most parents are plain bools (0/1); the five in
 # THRESHOLD_PARENTS are percentages, where "off" means the value is 0, not
@@ -93,7 +63,6 @@ GELBOORU_FAMILY_SITES = {
 PARENT_CHILD = {
     "timeoutPopups": ["popupTimeout"],
     "rotateWallpaper": ["wallpaperTimer", "wallpaperVariance"],
-    "downloadEnabled": ["tagList"],
     "lkToggle": ["lkCorner"],
     "mitosisMode": ["mitosisStrength"],
     "hibernateMode": ["hibernateType", "hibernateMin", "hibernateMax", "wakeupActivity", "hibernateLength", "fixWallpaper"],
@@ -104,7 +73,7 @@ PARENT_CHILD = {
     "fill": ["fill_delay", "drivePath", "avoidList"],
     "replace": ["replaceThresh", "drivePath", "avoidList"],
     "timerMode": ["timerSetupTime", "safeword"],
-    "downloadEnabled": ["tagList", "booruMinScore", "booruName"],
+    "downloadEnabled": ["tagList"],
     "movingChance": ["movingSpeed"],
     "capPopChance": ["capPopTimer", "capPopOpacity"],
     "subliminalsChance": ["subliminalsAlpha"],
@@ -141,7 +110,6 @@ SECTIONS = {
         ("themeType", "Edgeware appearance", "This controls Edgeware's popup/theme colors. Pick one and save; it is used the next time Edgeware starts. Original and Bimbo are light themes rather than the manager's dark theme.", "edge_theme", EDGEWARE_THEMES),
         ("packPath", "Pack to run", "Choose the pack folder from data\\packs. This is the pack Edgeware will use when it starts.", "pack", None),
         ("showLoadingFlair", "Show startup screen", "Show Edgeware's startup image when it begins.", "bool", None),
-        ("_priorityMode", "Priority", "When a pack's own settings disagree with what's saved here: Pack Priority writes the pack's values in every time you Save, so they're what Edgeware uses next run. Default Priority always saves what's shown here instead. Re-save after switching packs or this setting to refresh it.", "choice", ["Pack Priority","Default Priority"]),
         ("globalPanicButton", "Global panic key", "The emergency key that should work even when another program has focus. Click Set Key, then press the key you want.", "global_key", None),
     ],
     "Popups": [
@@ -163,7 +131,7 @@ SECTIONS = {
         ("denialChance", "Popup denial chance", "Chance that a popup shows a blurred or pixelated image with teasing text over it, instead of showing normally. Does not affect how the popup closes.", "pct", None),
         ("buttonless", "Force buttonless popups", "Removes the normal close button from popups. Clicking the popup itself closes it instead.", "bool", None),
         ("multiClick", "Require multiple clicks", "Some popups may require more than one click before they close.", "bool", None),
-        ("lkScaling", "Popup size", "General popup size. 100 is normal size.", "pct", None),
+        ("lkScaling", "Popup opacity", "General popup opacity. 100 is fully opaque.", "pct", None),
         ("timeoutPopups", "Automatically close popups", "Lets popups close themselves after a timer.", "bool", None),
         ("popupTimeout", "Automatic close time", "How many seconds a popup stays before closing itself.", "sec", None),
         ("movingChance", "Moving popup chance", "Chance from 0 to 100 that a popup moves around the screen.", "pct", None),
@@ -177,7 +145,7 @@ SECTIONS = {
     ],
     "Hypnotics": [
         ("capPopChance", "Subliminal caption chance", "Chance from 0 to 100 that brief caption messages appear.", "pct", None),
-        ("capPopTimer", "Subliminal message time", "How long a subliminal caption stays visible.", "sec", None),
+        ("capPopTimer", "Subliminal message time", "How long a subliminal caption stays visible, in milliseconds (1000 = 1 second). Default is 300.", "ms", None),
         ("capPopOpacity", "Subliminal caption opacity", "How visible subliminal captions are, from 0 to 100.", "pct", None),
         ("subliminalsChance", "Subliminals chance", "Chance from 0 to 100 that a visual overlay is put over an image.", "pct", None),
         ("subliminalsAlpha", "Image overlay opacity", "How strong the visual overlay is, from 0 to 100.", "pct", None),
@@ -189,9 +157,8 @@ SECTIONS = {
     ],
     "Internet": [
         ("downloadEnabled", "Allow online image downloads", "Allows Edgeware to download images from its configured online source.", "bool", None),
-        ("tagList", "Online image tags", "Words used when choosing online images.", "text", None),
-        ("booruMinScore", "Minimum score", "Skips results scoring below this. Can be negative. Not every site's scoring is equally reliable - this is best-effort, not a hard guarantee.", "signed_int", None),
-        ("booruName", "Site to search", "Which site to download from. v21's downloader only supports one site at a time - matches Edgeware's actual booruName setting. Not every listed site has been confirmed working - see the Troubleshooting tab's booru test tool if downloads aren't working.", "choice", ALLOWED_BOORU_SITES),
+        ("tagList", "Online image tags", "Tags used when choosing online images. Separate several tags with >  (for example: tag1>tag2). Use all for no filter. Edgeware v21 downloads from Gelbooru only, which may require an account now.", "text", None),
+        ("showDiscord", "Show on Discord", "Displays a status on Discord while Edgeware runs, if Discord is open. The text and image can be customized per-pack by the pack creator. This could be embarrassing if seen on a main account, so think about who might see it before enabling.", "bool", "danger"),
     ],
     "Modes": [
         ("lkToggle", "Low-key mode", "Keeps activity concentrated in one corner of the screen.", "bool", None),
@@ -217,7 +184,7 @@ SECTIONS = {
         ("corruptionThemeCycle", "Cycle themes with corruption", "Allows corruption to change themes as it progresses.", "bool", None),
         ("corruptionPurityMode", "Corruption purity mode", "Runs corruption in reverse - starts at the highest level and decreases toward the lowest over time, instead of escalating from lowest to highest.", "bool", None),
         ("corruptionFullPerm", "Allow full corruption permissions", "Allows corruption to use settings that are normally protected.", "bool", None),
-        ("corruptionDevMode", "Corruption dev mode", "Logs extra detail about corruption changes, and shows a system notification each time the corruption level actually changes (\"Corruption Level Increased to N\") - useful for checking a pack's corruption pacing without guessing.", "bool", None),
+        ("corruptionDevMode", "Corruption dev mode", "Shows a debug label on each popup with its corruption-level info, and logs extra detail - useful for checking a pack's corruption pacing.", "bool", None),
     ],
     "Scheduling": [
         ("schedule", "Use a schedule", "Automatically start Edgeware using Windows Task Scheduler.", "bool", None),
@@ -243,7 +210,7 @@ SECTIONS = {
         ("panicDisabled", "Disable emergency stop", "Removes the easy emergency stop. Do not enable unless you understand the consequences.", "bool", "danger"),
     ],
     "Troubleshooting": [
-        ("videoHardwareAcceleration", "Use video hardware acceleration", "Lets your graphics hardware help decode video. Turn off if videos look wrong or crash - some GPU/driver combinations don't handle it well.", "bool", None),
+        ("videoHardwareAcceleration", "Use video hardware acceleration", "Lets your graphics hardware help decode video. Turn off if videos are black, look wrong, or crash - some GPU/driver combinations don't handle it well.", "bool", None),
         ("mpvSubprocess", "Use a separate video process", "Runs the video player in its own process, so a crash in video playback is less likely to take down all of Edgeware with it.", "bool", None),
     ],
     "Corruption Preview": [],
@@ -272,19 +239,20 @@ DANGER_TEXT = {
     "start_on_logon": "This makes Edgeware start automatically with Windows.",
     "timerMode": "This can temporarily prevent the emergency stop from working normally.",
     "panicDisabled": "This removes an easy way to stop Edgeware.",
+    "showDiscord": "This can show a status on Discord that others might see.",
 }
 DESCRIPTIONS = {
     "Start":"The few things you should decide before running Edgeware.",
     "Popups":"How often Edgeware throws different kinds of things onto the screen.",
     "Popup Details":"Smaller rules that change what individual popups do.",
-    "Hypnotics":"Subliminal captions, the image-overlay spiral effect, and the optional full-screen spiral/binaural layer.",
+    "Hypnotics":"Subliminal captions and the image-overlay spiral effect.",
     "Wallpaper":"How Edgeware handles your desktop wallpaper.",
     "Internet":"Features that need an internet connection.",
     "Modes":"Optional behavior that changes how Edgeware acts.",
     "Corruption":"Make Edgeware become more intense as time passes.",
     "Scheduling":"Make Edgeware start automatically later or repeatedly.",
     "Computer Changes":"Settings that can create, replace, or change files. Read these carefully.",
-    "Troubleshooting":"Compatibility tools, a WebP conversion utility, and a small Edgeware theme compatibility fix.",
+    "Troubleshooting":"Compatibility settings, a WebP-to-GIF converter, and a small Edgeware theme compatibility fix.",
     "Corruption Preview":"Read-only info about the selected pack's media counts and corruption levels, for checking a pack's own corruption setup without guessing.",
 }
 
@@ -303,15 +271,13 @@ HIBERNATE_PRESETS = {
 
 # Intensity presets: a quick starting point, not a precise science. Each one
 # sets a bundle of related settings at once; you can still fine-tune any of
-# them afterward like normal. A pack set to Pack Priority can still override
-# any of these same settings at runtime - see the conflict note this card
-# shows underneath the buttons when that applies.
+# them afterward like normal.
 INTENSITY_PRESETS = [
     ("A slight annoyance", {
         "delay": 5000, "popupMod": 50, "vidMod": 5, "audioMod": 25, "webMod": 0, "promptMod": 0,
         "timeoutPopups": 1, "popupTimeout": 15, "singleMode": 1,
         "movingChance": 0, "movingSpeed": 0, "denialChance": 0,
-        "capPopChance": 0, "capPopOpacity": 50, "capPopTimer": 3,
+        "capPopChance": 0, "capPopOpacity": 50, "capPopTimer": 300,
         "notificationChance": 5, "notificationImageChance": 20,
         "maxAudio": 1, "audioVolume": 40, "maxVideos": 1, "videoVolume": 40,
         "corruptionMode": 1, "corruptionTrigger": "Timed", "corruptionTime": 120,
@@ -321,7 +287,7 @@ INTENSITY_PRESETS = [
         "delay": 3000, "popupMod": 60, "vidMod": 10, "audioMod": 50, "webMod": 0, "promptMod": 0,
         "timeoutPopups": 1, "popupTimeout": 10, "singleMode": 1,
         "movingChance": 0, "movingSpeed": 0, "denialChance": 0,
-        "capPopChance": 10, "capPopOpacity": 60, "capPopTimer": 3,
+        "capPopChance": 10, "capPopOpacity": 60, "capPopTimer": 300,
         "notificationChance": 10, "notificationImageChance": 40,
         "maxAudio": 1, "audioVolume": 55, "maxVideos": 2, "videoVolume": 55,
         "corruptionMode": 1, "corruptionTrigger": "Timed", "corruptionTime": 90,
@@ -331,7 +297,7 @@ INTENSITY_PRESETS = [
         "delay": 1750, "popupMod": 75, "vidMod": 20, "audioMod": 75, "webMod": 10, "promptMod": 5,
         "timeoutPopups": 0, "popupTimeout": 8, "singleMode": 0,
         "movingChance": 1, "movingSpeed": 1, "denialChance": 0,
-        "capPopChance": 30, "capPopOpacity": 75, "capPopTimer": 2,
+        "capPopChance": 30, "capPopOpacity": 75, "capPopTimer": 250,
         "notificationChance": 15, "notificationImageChance": 60,
         "maxAudio": 2, "audioVolume": 70, "maxVideos": 3, "videoVolume": 70,
         "corruptionMode": 1, "corruptionTrigger": "Timed", "corruptionTime": 60,
@@ -341,83 +307,13 @@ INTENSITY_PRESETS = [
         "delay": 1250, "popupMod": 90, "vidMod": 40, "audioMod": 100, "webMod": 20, "promptMod": 10,
         "timeoutPopups": 0, "popupTimeout": 5, "singleMode": 0,
         "movingChance": 5, "movingSpeed": 2, "denialChance": 0,
-        "capPopChance": 60, "capPopOpacity": 90, "capPopTimer": 2,
+        "capPopChance": 60, "capPopOpacity": 90, "capPopTimer": 200,
         "notificationChance": 20, "notificationImageChance": 80,
         "maxAudio": 3, "audioVolume": 90, "maxVideos": 4, "videoVolume": 90,
         "corruptionMode": 1, "corruptionTrigger": "Timed", "corruptionTime": 30,
         "mitosisMode": 1, "mitosisStrength": 3, "hibernateMode": 0,
     }),
 ]
-
-
-def parse_version(v):
-    """'22.1.0' -> (22,1,0); tolerates a trailing '_something' suffix like the
-    old config UI's version string did. Returns None if unparseable, so
-    callers can skip comparison instead of crashing on a weird value."""
-    try:
-        return tuple(int(p) for p in v.split("_")[0].split("."))
-    except Exception:
-        return None
-
-
-def fetch_live_version():
-    """Best-effort fetch of the VERSION string from this fork's own repo.
-    Never raises - network failure, timeout, or a missing/renamed VERSION
-    line should just mean 'couldn't check', not a crash or a popup."""
-    try:
-        with urllib.request.urlopen(UPDATE_CHECK_URL, timeout=5) as resp:
-            text = resp.read().decode("utf-8", errors="ignore")
-        match = re.search(r'VERSION\s*=\s*"([^"]+)"', text)
-        return match.group(1) if match else None
-    except Exception:
-        return None
-
-
-def _test_one_booru_site(site, tags, min_score, api_key, user_id, booru_scraper_mod, booru_pkg_mod, asyncio_mod):
-    """One real, minimal (limit=1) request through whichever code path a real
-    download would actually use for this site - booru_scraper for the 9
-    rebuilt Gelbooru-family sites, the third-party "booru" package for
-    everything else. Returns (kind, detail) where kind is "ok" (got a
-    result), "empty" (reached the site fine, just no matching result - not
-    necessarily broken, could just be the tags), or "fail" (an actual
-    exception - detail is the exception type/message, which for HTTP
-    failures usually includes the status code, e.g. what would tell us
-    Gelbooru wants auth or a site is dead server-side)."""
-    # The "booru" package's own idiom for zero results, confirmed against
-    # its source (utils/fetch.py, client/furbooru.py, client/paheal.py):
-    # raises a bare Exception or ValueError carrying this exact message,
-    # instead of returning an empty list. Caught a real run classifying
-    # these as FAIL when they're really the same thing as booru_scraper's
-    # "empty" case - not broken, just nothing matched these tags/score.
-    NO_RESULTS_MESSAGE = "no results, make sure you spelled everything right"
-    try:
-        if site in GELBOORU_FAMILY_SITES:
-            url = next(booru_scraper_mod.search_gelbooru_family(site, tags, min_score, limit=1, api_key=api_key, user_id=user_id), None)
-            return ("ok", url) if url else ("empty", "no results for these tags/score")
-        else:
-            site_obj = getattr(booru_pkg_mod, site)()
-            raw = asyncio_mod.run(site_obj.search(query=tags, limit=1))
-            results = booru_pkg_mod.resolve(raw)
-            return ("ok", f"{len(results)} result(s) via the booru package") if results else ("empty", "no results for these tags/score")
-    except Exception as e:
-        if NO_RESULTS_MESSAGE in str(e):
-            return ("empty", "no results for these tags/score (booru package raises rather than returning empty)")
-        return ("fail", f"{type(e).__name__}: {e}")
-
-
-def _save_booru_test_log(results, tags, min_score):
-    log_dir = DATA / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    path = log_dir / f"booru_site_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    lines = [
-        f"Edgeware++ booru site test - {datetime.now().isoformat(timespec='seconds')}",
-        f'tags="{tags}"  min_score={min_score}',
-        "",
-    ]
-    for site, kind, detail in results:
-        lines.append(f"[{kind.upper():5}] {site:14} {detail}")
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return path
 
 
 def load_json(path, fallback=None):
@@ -490,15 +386,11 @@ class _ScheduleValue:
 
 
 def apply_schedule(cfg):
-    """Actually create/remove the Windows Task Scheduler entry for the
-    Scheduler feature. Saving the "schedule" key into config.json alone does
-    nothing - Edgeware's runtime never reads it either (this is a
-    config.pyw/original-UI-only feature, not a real Settings/Item, same
-    situation as apply_startup_toggle above). The original config window
-    only makes this work because it calls os_utils.set_schedule()/
-    delete_schedule() as a side effect of saving; config.pyw never did,
-    which is why toggling "Use a schedule" and saving previously did
-    nothing at all."""
+    """Create/remove the Windows Task Scheduler entry for the Scheduler
+    feature. Saving the "schedule" key into config.json alone does nothing -
+    Edgeware's runtime never reads it (config.pyw/UI-only feature, same as
+    apply_startup_toggle above), so this calls os_utils.set_schedule()/
+    delete_schedule() directly as a side effect of saving."""
     src_path = str(HERE / "src")
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
@@ -533,35 +425,76 @@ def safe_backup():
             shutil.copy2(CONFIG, target)
 
 
+RUN_LOG = DATA / "logs" / "edgeware_run.log"
+
+
 def run_edgeware(pack_value=None):
+    """Start Edgeware with its console output (including crash tracebacks)
+    captured to data/logs/edgeware_run.log. Under a .pyw launcher there is no
+    console, so without this a startup crash is completely invisible."""
     if not MAIN.exists():
         raise FileNotFoundError(f"Could not find Edgeware's main program:\n{MAIN}")
-    return subprocess.Popen([sys.executable, str(MAIN)], cwd=str(HERE))
+    RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log = open(RUN_LOG, "w", encoding="utf-8", errors="replace")
+    log.write(f"--- Started {datetime.now():%Y-%m-%d %H:%M:%S} with {sys.executable} (Python {sys.version.split()[0]}) ---\n")
+    log.flush()
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    try:
+        return subprocess.Popen([sys.executable, str(MAIN)], cwd=str(HERE), stdout=log, stderr=subprocess.STDOUT, **kwargs)
+    finally:
+        log.close()  # the child keeps its own handle
+
+
+def read_run_log_tail(lines=25):
+    try:
+        text = RUN_LOG.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        return "\n".join(text[-lines:])
+    except OSError:
+        return "(no log found)"
+
+
+def prelaunch_warnings(cfg):
+    """Things that make Edgeware look broken when it is actually 'working'."""
+    warns = []
+    chances = ["popupMod", "vidMod", "audioMod", "promptMod", "webMod"]
+    try:
+        if all(int(cfg.get(k, 0) or 0) == 0 for k in chances):
+            warns.append("Every chance setting (image, video, audio, prompt, website) is 0, so Edgeware will run but never show anything.")
+        elif int(cfg.get("popupMod", 0) or 0) == 0 and int(cfg.get("vidMod", 0) or 0) == 0:
+            warns.append("Image and video popup chance are both 0, so no popups will appear (only audio/prompts/websites, if enabled).")
+    except (TypeError, ValueError):
+        pass
+    try:
+        if int(cfg.get("delay", 1000) or 0) >= 60000:
+            warns.append(f"Time between popup checks is {int(cfg['delay'])//1000} seconds, so the first popup may take a long time.")
+    except (TypeError, ValueError):
+        pass
+    if truth(cfg.get("hibernateMode", 0)):
+        warns.append("Hibernate mode is ON: Edgeware stays silent until its first wake-up (up to the longest hibernate delay).")
+    if truth(cfg.get("schedule", 0)):
+        warns.append("A schedule is set. Run now starts immediately; the schedule only adds a later start.")
+    if truth(cfg.get("corruptionMode", 0)):
+        warns.append("Corruption is ON: the pack's first level may have few or no moods enabled, so early popups can be sparse.")
+    pack = cfg.get("packPath")
+    if pack:
+        pdir = PACKS / str(pack)
+        if not pdir.is_dir():
+            warns.append(f"The selected pack '{pack}' was not found in data/packs; Edgeware will use the default pack.")
+        else:
+            media = sum(1 for d in ("img", "vid", "aud") if (pdir / d).is_dir() and any(f.is_file() for f in (pdir / d).iterdir()))
+            if media == 0:
+                warns.append(f"The selected pack '{pack}' has no images, videos or audio files.")
+    if sys.platform == "win32" and not (DATA / "libmpv-2.dll").is_file():
+        warns.append("data/libmpv-2.dll is missing, so Edgeware will likely fail to start. Run EdgewareSetup.bat.")
+    if sys.version_info < (3, 12):
+        warns.append(f"Python {sys.version_info.major}.{sys.version_info.minor} is older than the 3.12 Edgeware needs.")
+    return warns
 
 
 def key_to_display(value):
     return value or "Not set"
-
-
-def pack_candidates_from_zip(zpath):
-    with tempfile.TemporaryDirectory(prefix="edgeware_pack_") as td:
-        root = Path(td)
-        with zipfile.ZipFile(zpath) as z:
-            for info in z.infolist():
-                name = Path(info.filename)
-                if name.is_absolute() or ".." in name.parts:
-                    raise ValueError("The ZIP contains an unsafe file path and was not imported.")
-            z.extractall(root)
-        candidates = []
-        for p in [root, *[x for x in root.rglob("*") if x.is_dir()]]:
-            if (p / "index.json").is_file() or (p / "info.json").is_file() or (p / "img").is_dir():
-                candidates.append(p)
-        # Prefer the shallowest candidate, unless it is a resource folder inside a full Edgeware install.
-        candidates.sort(key=lambda p: (len(p.relative_to(root).parts), str(p).lower()))
-        candidate = candidates[0] if candidates else None
-        if candidate is None:
-            raise ValueError("I could not find a pack inside that ZIP. A pack normally contains index.json, info.json, or an img folder.")
-        return root, candidate
 
 
 def import_pack(parent):
@@ -722,83 +655,6 @@ def convert_webp_to_gif(pack_dir, progress=None, cancel_event=None):
     return converted
 
 
-# On v21, both img-folder popups and hypno/subliminal overlays hand their
-# file straight to mpv unconditionally, and mpv cannot decode animated WebP
-# at all (renders as a black square). img-folder popups only got a native,
-# mpv-free path for animated WebP starting in v22, so on v21 there is no
-# folder where converting a GIF to WebP is safe. Kept for reference but not
-# wired to a button in this v21 build - see convert_webp_to_gif instead.
-HYPNO_FOLDER_NAMES = {"hypno", "subliminals"}
-
-
-def convert_gif_to_webp(pack_dir, progress=None, cancel_event=None, quality=90):
-    if not pack_dir or not pack_dir.is_dir():
-        raise ValueError("Select a pack first.")
-    try:
-        from PIL import Image
-    except Exception as e:
-        raise RuntimeError("Pillow is not available in this Python environment.") from e
-    all_files = list(pack_dir.rglob("*.gif")) + list(pack_dir.rglob("*.GIF"))
-    files = [
-        p for p in all_files
-        if HYPNO_FOLDER_NAMES.isdisjoint(part.lower() for part in p.relative_to(pack_dir).parts[:-1])
-    ]
-    files = sorted(set(files), key=lambda p: str(p).lower())
-    if not files:
-        return 0
-    converted = 0
-    failures = []
-    total = len(files)
-    for file_index, src in enumerate(files, 1):
-        if cancel_event and cancel_event.is_set():
-            break
-        dst = src.with_suffix(".webp")
-        try:
-            with Image.open(src) as im:
-                n = getattr(im, "n_frames", 1)
-                frames = []
-                durations = []
-                for i in range(n):
-                    if cancel_event and cancel_event.is_set():
-                        raise InterruptedError("Conversion cancelled.")
-                    im.seek(i)
-                    # GIF transparency is already all-or-nothing, so converting
-                    # straight to RGBA carries it over exactly - no lossy
-                    # quantization step needed the way GIF output requires.
-                    frames.append(im.convert("RGBA"))
-                    durations.append(max(20, int(im.info.get("duration", 100) or 100)))
-                    if progress:
-                        progress({"stage":"frame", "file":file_index, "total":total, "name":src.name, "frame":i+1, "frames":n})
-                tmp = dst.with_suffix(".webp.tmp")
-                if len(frames) > 1:
-                    frames[0].save(tmp, format="WEBP", save_all=True, append_images=frames[1:], duration=durations, loop=0, quality=quality, method=6)
-                else:
-                    frames[0].save(tmp, format="WEBP", quality=quality, method=6)
-                os.replace(tmp, dst)
-            src.unlink()
-            converted += 1
-            if progress:
-                progress({"stage":"file", "file":file_index, "total":total, "name":src.name, "frame":n, "frames":n, "converted":converted})
-        except InterruptedError:
-            try:
-                if dst.with_suffix(".webp.tmp").exists():
-                    dst.with_suffix(".webp.tmp").unlink()
-            except OSError:
-                pass
-            break
-        except Exception as e:
-            try:
-                if dst.with_suffix(".webp.tmp").exists():
-                    dst.with_suffix(".webp.tmp").unlink()
-            except OSError:
-                pass
-            failures.append(f"{src.name}: {e}")
-            if progress:
-                progress({"stage":"error", "file":file_index, "total":total, "name":src.name, "error":str(e)})
-    if failures:
-        raise RuntimeError(f"Converted {converted} file(s), but {len(failures)} failed:\n\n" + "\n".join(failures[:8]))
-    return converted
-
 
 def apply_edgeware_theme_background_fix():
     popup = HERE / "src" / "features" / "popup.py"
@@ -822,13 +678,10 @@ def apply_edgeware_theme_background_fix():
 
 def read_pack_overrides(pack_name):
     """Read the {key: value} settings a pack's own config.json declares, for
-    every setting config.pyw knows about (not just the old chance-only
-    subset) - this is a query only, purely for display in this tool; it
-    never touches self.cfg. The actual runtime application of these (when
-    Priority is set to Pack) happens in main_edgeware.py, using Edgeware's
-    own Item schema/setting machinery for exact validation and unit
-    conversion - the coercion here is deliberately simpler since this is
-    just a preview, not what actually runs."""
+    every setting config.pyw knows about. This is a query only; it never
+    touches self.cfg. Used by "Load Pack Configuration", which copies these
+    values into the saved settings. (Edgeware v21 itself never applies a
+    pack's config.json automatically.)"""
     if not pack_name: return {}
     pack_config=PACKS/str(pack_name)/"config.json"
     if not pack_config.is_file(): return {}
@@ -864,11 +717,6 @@ class App:
         self.cfg = load_json(CONFIG, dict(self.defaults))
         for k, v in self.defaults.items():
             self.cfg.setdefault(k, v)
-        # One-time migration from an earlier ON/OFF "Priority" toggle to the
-        # clearer "Pack Priority"/"Default Priority" choice, in case this
-        # tool's own config.json marker from a prior version is present.
-        if "_configOverridesPack" in self.cfg:
-            self.cfg["_priorityMode"] = "Default Priority" if truth(self.cfg.pop("_configOverridesPack")) else "Pack Priority"
         # Migrate untouched old-default values to the prettier manager defaults,
         # while leaving settings the user already customized alone.
         for key, desired in PRETTY_DEFAULTS.items():
@@ -894,28 +742,6 @@ class App:
         self.refresh_packs()
         self.render(self.current_section)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        # Disabled for the v21 build - see UPDATE_CHECK_URL comment above.
-        # self.check_for_updates_async()
-
-    def check_for_updates_async(self):
-        """Non-blocking - runs the network check off the main thread so a
-        slow/unreachable connection can't freeze the GUI on startup, then
-        hands the result back via root.after() to touch widgets safely."""
-        def worker():
-            live_version = fetch_live_version()
-            self.root.after(0, lambda: self.show_update_notice(live_version))
-        threading.Thread(target=worker, daemon=True).start()
-
-    def show_update_notice(self, live_version):
-        local_v = parse_version(VERSION)
-        live_v = parse_version(live_version) if live_version else None
-        if not (local_v and live_v and live_v > local_v):
-            return  # up to date, or couldn't check - stay silent, no nag
-        self.subtitle.config(
-            text=f"CONFIGURATION MANAGER  ·  v{VERSION}  ·  UPDATE AVAILABLE: v{live_version} (click)",
-            fg=self.palette["accent"], cursor="hand2",
-        )
-        self.subtitle.bind("<Button-1>", lambda e: webbrowser.open(UPDATE_RELEASES_URL))
 
     def build_shell(self):
         self.root.configure(bg=self.palette["bg"])
@@ -923,7 +749,7 @@ class App:
         self.top.pack(fill="x", padx=18, pady=(12, 6))
         self.title = tk.Label(self.top, text="EDGEWARE++", bg=self.palette["bg"], fg=self.palette["white"], font=("Segoe UI", 20, "bold"))
         self.title.pack(side="left")
-        self.subtitle = tk.Label(self.top, text=f"CONFIGURATION MANAGER  ·  v{VERSION}", bg=self.palette["bg"], fg=self.palette["accent2"], font=("Segoe UI", 8, "bold"))
+        self.subtitle = tk.Label(self.top, text=f"CONFIGURATION MANAGER  ·  v21 EDITION  ·  v{VERSION}", bg=self.palette["bg"], fg=self.palette["accent2"], font=("Segoe UI", 8, "bold"))
         self.subtitle.pack(side="left", padx=(10,0), pady=(7,0))
         self.status_label = tk.Label(self.top, text="READY", bg=self.palette["bg"], fg=self.palette["muted"], font=("Segoe UI", 8, "bold"))
         self.status_label.pack(side="right", pady=(5,0))
@@ -942,11 +768,9 @@ class App:
         self.nav_divider=tk.Frame(self.nav, bg=self.palette["border"], height=1)
         self.nav_divider.pack(fill="x", padx=9, pady=7)
         self.nav_action_buttons=[]
-        for text,cmd,bold in [("Import Pack",self.import_pack_ui,True),("Reset to defaults",self.reset_defaults,False),("Open Edgeware folder",self.open_root,False)]:
+        for text,cmd,bold in [("Import Pack",self.import_pack_ui,True),("Reset to defaults",self.reset_defaults,False),("View last run log",self.view_run_log,False),("Open Edgeware folder",self.open_root,False)]:
             b=tk.Button(self.nav, text=text, anchor="w", relief="flat", bd=0, padx=11, pady=5, cursor="hand2", font=("Segoe UI",10,"bold" if bold else "normal"), command=cmd)
             b.pack(fill="x", padx=5); self.nav_action_buttons.append(b)
-        self.do_not_press_nav_btn=tk.Button(self.nav, text="DO NOT PRESS", anchor="w", relief="flat", bd=0, padx=11, pady=5, cursor="hand2", font=("Segoe UI",10,"bold"), command=self.do_not_press_nav_clicked)
-        self.do_not_press_nav_btn.pack(fill="x", padx=5, pady=(1,0))
 
         self.content = tk.Frame(self.body, bg=self.palette["panel"], highlightthickness=1, highlightbackground=self.palette["border"])
         self.content.pack(side="left", fill="both", expand=True)
@@ -986,15 +810,10 @@ class App:
         self.current_section=section
         for w in self.page.winfo_children(): w.destroy()
         self.row_widgets={}  # Per-tab only (unlike self.vars) - rebuilt fresh every render
-        # NOT resetting self.vars here (it used to be self.vars={}): that wiped
-        # every other tab's tracked widgets on each navigation, so collect() -
-        # called by every Save variant - could only ever see whatever tab
-        # happened to be open at that exact moment. Any change made on a tab
-        # you'd since navigated away from was silently discarded. Entries for
-        # the current tab's keys get overwritten below as normal; entries for
-        # other tabs' keys are left alone, and their bound Tkinter Variables
-        # keep their last-set value even after the widgets themselves are
-        # destroyed, so this is safe.
+        # self.vars is NOT reset here - it tracks every tab's widgets across
+        # navigation, so collect() sees changes on tabs you've left. Current
+        # tab's entries are overwritten below; other tabs' Variables keep
+        # their last-set value even after their widgets are destroyed.
         self.select_nav(section)
         self.refresh_packs()
         self.pack_overrides=read_pack_overrides(self.cfg.get("packPath"))
@@ -1007,13 +826,12 @@ class App:
             if index in groups:
                 self.add_group_header(*groups[index])
             self.add_setting(key,label,helptext,typ,choices)
-            if key=="_priorityMode":
+            if key=="packPath":
                 self.add_adopt_pack_settings_button()
         if section == "Wallpaper":
             self.add_panic_wallpaper_preview()
         if section == "Corruption Preview":
             self.add_corruption_preview()
-        self.refresh_do_not_press_nav_button()
         self.canvas.yview_moveto(0)
 
     def select_nav(self,active):
@@ -1033,95 +851,6 @@ class App:
         if typ=="multiline": return "\n".join(str(v).split(">")) if v else ""
         return str(v)
 
-    def refresh_do_not_press_nav_button(self):
-        armed=truth(self.cfg.get(DO_NOT_PRESS_KEY,0))
-        if armed:
-            self.do_not_press_nav_btn.configure(text="Disarm \"Do Not Press\"",bg=self.palette["panel3"],fg=self.palette["danger"],activebackground=self.palette["panel3"],activeforeground=self.palette["danger"])
-        else:
-            self.do_not_press_nav_btn.configure(text="DO NOT PRESS",bg=CRIMSON,fg=self.palette["white"],activebackground=CRIMSON,activeforeground=self.palette["white"])
-
-    def do_not_press_nav_clicked(self):
-        if truth(self.cfg.get(DO_NOT_PRESS_KEY,0)):
-            self.disarm_do_not_press()
-        else:
-            self.do_not_press_clicked()
-
-    def do_not_press_clicked(self):
-        win=tk.Toplevel(self.root)
-        win.title("Are you sure?")
-        win.geometry("620x560")
-        win.resizable(False,False)
-        win.transient(self.root); win.grab_set()
-        win.configure(bg=self.palette["bg"])
-        tk.Label(win,text="You were told not to press that.",bg=self.palette["bg"],fg=self.palette["danger"],font=("Segoe UI",15,"bold")).pack(anchor="w",padx=20,pady=(18,4))
-        body=(
-            "Confirming this will, starting the next time Edgeware runs:\n\n"
-            "- Turn on \"Run when Windows starts\", so it launches automatically at login.\n"
-            "- Pick a random installed pack each time it starts, ignoring whatever pack is normally selected.\n"
-            "- Wait a random 5 to 90 minutes after starting before doing anything - silently, no popups or indication.\n"
-            "- Turn on Panic Lockout with the safeword below, active for the entire wait and the session after: "
-            "Panic (hotkey or tray icon) will ask for the safeword and do nothing without it, until the lockout "
-            "time below runs out. The panic hotkey itself is never disabled - it always exists and always responds "
-            "to being pressed. Only whether it works immediately depends on the safeword and lockout time.\n\n"
-            "This repeats every time Edgeware starts - including future Windows logins - until you press "
-            "\"Disarm 'Do Not Press'\" in the left sidebar (visible on every page), or change these settings "
-            "normally. Full details are in the README "
-            "under \"Do Not Press\"."
-        )
-        tk.Label(win,text=body,bg=self.palette["bg"],fg=self.palette["muted"],font=("Segoe UI",10),wraplength=580,justify="left").pack(anchor="w",padx=20,pady=(0,10))
-        form=tk.Frame(win,bg=self.palette["bg"]); form.pack(fill="x",padx=20)
-        tk.Label(form,text="Safeword (required to end the lockout):",bg=self.palette["bg"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).grid(row=0,column=0,sticky="w",pady=(0,2))
-        safeword_var=tk.StringVar(value=str(self.cfg.get("safeword","")))
-        tk.Entry(form,textvariable=safeword_var,width=34,bg=self.palette["panel2"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat").grid(row=1,column=0,sticky="w",pady=(0,10))
-        tk.Label(form,text="Lockout time, in minutes (how long Panic needs the safeword for):",bg=self.palette["bg"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).grid(row=2,column=0,sticky="w",pady=(0,2))
-        lockout_var=tk.StringVar(value=str(self.cfg.get("timerSetupTime") or 60))
-        tk.Entry(form,textvariable=lockout_var,width=10,bg=self.palette["panel2"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat").grid(row=3,column=0,sticky="w",pady=(0,10))
-        tk.Label(form,text='Type ARM below to confirm:',bg=self.palette["bg"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).grid(row=4,column=0,sticky="w",pady=(0,2))
-        confirm_var=tk.StringVar()
-        tk.Entry(form,textvariable=confirm_var,width=10,bg=self.palette["panel2"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat").grid(row=5,column=0,sticky="w",pady=(0,14))
-        btns=tk.Frame(win,bg=self.palette["bg"]); btns.pack(pady=(2,18))
-        def confirm():
-            safeword=safeword_var.get().strip()
-            if not safeword:
-                messagebox.showerror(APP,"A safeword is required."); return
-            if confirm_var.get().strip().upper()!="ARM":
-                messagebox.showerror(APP,"Type ARM (exactly) to confirm."); return
-            try:
-                lockout_minutes=max(1,int(lockout_var.get().strip()))
-            except Exception:
-                messagebox.showerror(APP,"Lockout time must be a whole number of minutes."); return
-            self.cfg["start_on_logon"]=1
-            self.cfg["timerMode"]=1
-            self.cfg["safeword"]=safeword
-            self.cfg["timerSetupTime"]=lockout_minutes
-            self.cfg[DO_NOT_PRESS_KEY]=1
-            if not self.save(True): return
-            win.grab_release(); win.destroy()
-            self.render(self.current_section)
-            if "Couldn't update the Windows Startup shortcut" in self.status.get():
-                # The whole point of this feature is "this happens without you
-                # needing to check on it" - a failure here can't be allowed to
-                # hide behind a confident "Armed" dialog while the real detail
-                # sits in a status-bar note underneath it. Do Not Press is
-                # everything-but-the-startup-shortcut armed right now: Panic
-                # Lockout and the random-pack behavior are saved and will work
-                # the next time Edgeware runs manually, but it will NOT
-                # automatically start at the next Windows login until this is
-                # resolved.
-                messagebox.showwarning(APP,"Armed, but the Windows Startup shortcut could not be created:\n\n"+self.status.get().split("Couldn't update the Windows Startup shortcut: ",1)[-1].rstrip(")")+"\n\nEverything else is armed (Panic Lockout, safeword, random pack on next run) - but Edgeware will NOT automatically start at your next Windows login until this is fixed. Try running Edgeware from a folder that isn't inside OneDrive, or check that this program can write to your Startup folder.")
-            else:
-                messagebox.showinfo(APP,"Armed. This takes effect the next time Edgeware starts.")
-        self.make_button(btns,"Cancel",lambda:(win.grab_release(),win.destroy())).pack(side="left",padx=6)
-        tk.Button(btns,text="Arm it",command=confirm,relief="flat",bd=0,padx=16,pady=8,cursor="hand2",bg=CRIMSON,fg=self.palette["white"],activebackground=CRIMSON,activeforeground=self.palette["white"],font=("Segoe UI",11,"bold")).pack(side="left",padx=6)
-
-    def disarm_do_not_press(self):
-        if not messagebox.askyesno(APP,"Disarm? This turns off \"Run when Windows starts\" and Panic Lockout that this feature turned on, and stops the random pack/delay behavior. Your safeword and lockout time stay saved in case you want them for other manual use."): return
-        self.cfg[DO_NOT_PRESS_KEY]=0
-        self.cfg["start_on_logon"]=0
-        self.cfg["timerMode"]=0
-        if not self.save(True): return
-        self.render(self.current_section)
-
     def add_intensity_presets(self):
         card=tk.Frame(self.page,bg=self.palette["panel3"],highlightthickness=1,highlightbackground=self.palette["border"])
         card.pack(fill="x",padx=14,pady=(0,9))
@@ -1130,14 +859,7 @@ class App:
         row=tk.Frame(card,bg=self.palette["panel3"]); row.pack(anchor="w",padx=10,pady=(0,4))
         for name,values in INTENSITY_PRESETS:
             self.make_button(row,name,lambda v=values,n=name:self.apply_intensity_preset(n,v)).pack(side="left",padx=(0,6))
-        pack_overrides=getattr(self,"pack_overrides",{})
-        preset_keys={k for _,values in INTENSITY_PRESETS for k in values}
-        conflicts={k:pack_overrides[k] for k in preset_keys if k in pack_overrides}
-        pack_wins=self.cfg.get("_priorityMode","Pack Priority")!="Default Priority"
-        if conflicts and pack_wins:
-            tk.Label(card,text=f"The selected pack overrides {len(conflicts)} of these settings and wins regardless of preset. Pack Priority is ON.",bg=self.palette["panel3"],fg=self.palette["accent2"],font=("Segoe UI",9,"bold")).pack(anchor="w",padx=10,pady=(0,8))
-        else:
-            tk.Label(card,text="",bg=self.palette["panel3"]).pack(pady=(0,4))
+        tk.Label(card,text="",bg=self.palette["panel3"]).pack(pady=(0,4))
 
     def apply_intensity_preset(self,name,values):
         self.cfg.update(values)
@@ -1196,20 +918,20 @@ class App:
         card=tk.Frame(self.page,bg=self.palette["panel2"],highlightthickness=1,highlightbackground=self.palette["border"])
         card.pack(fill="x",padx=14,pady=3)
         left=tk.Frame(card,bg=self.palette["panel2"]); left.pack(side="left",fill="both",expand=True,padx=10,pady=7)
-        tk.Label(left,text="Adopt this pack's settings as your default",bg=self.palette["panel2"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w")
-        tk.Label(left,text="Copies every setting the selected pack specifies into your own saved settings, so they stick even under Default Priority or with a different pack later.",bg=self.palette["panel2"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=560,justify="left").pack(anchor="w",pady=(1,0))
+        tk.Label(left,text="Load Pack Configuration",bg=self.palette["panel2"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w")
+        tk.Label(left,text="Edgeware v21 does not apply a pack's own settings automatically. This copies every setting the selected pack specifies into your saved settings. Save afterward to keep them.",bg=self.palette["panel2"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=560,justify="left").pack(anchor="w",pady=(1,0))
         right=tk.Frame(card,bg=self.palette["panel2"]); right.pack(side="right",padx=10,pady=7)
-        self.make_button(right,"Adopt Pack Settings",self.adopt_pack_settings).pack()
+        self.make_button(right,"Load Pack Configuration",self.adopt_pack_settings).pack()
 
     def adopt_pack_settings(self):
         overrides=getattr(self,"pack_overrides",{})
         if not overrides:
-            messagebox.showinfo(APP,"The selected pack doesn't specify any settings of its own - nothing to adopt.")
+            messagebox.showinfo(APP,"The selected pack doesn't specify any settings of its own - nothing to load.")
             return
-        if not messagebox.askyesno(APP,f"Copy this pack's {len(overrides)} setting(s) into your own saved settings?\n\nThis overwrites your current values for just those settings - everything else stays as it is. Save afterward to keep it."):
+        if not messagebox.askyesno(APP,f"Load this pack's {len(overrides)} setting(s) into your settings?\n\nThis overwrites your current values for just those settings - everything else stays as it is. Save afterward to keep it."):
             return
         self.cfg.update(overrides)
-        self.status.set(f"Adopted {len(overrides)} setting(s) from the pack. Save to keep them.")
+        self.status.set(f"Loaded {len(overrides)} setting(s) from the pack. Save to keep them.")
         self.render(self.current_section)
 
     def add_panic_wallpaper_preview(self):
@@ -1301,7 +1023,7 @@ class App:
         # and needs the full card width instead, stacked below the label
         # rather than squeezed beside it (that squeeze is what was pushing
         # columns off past the visible window edge).
-        full_width=typ=="booru_sites"
+        full_width=False
         left=tk.Frame(card,bg=self.palette["panel2"])
         if full_width: left.pack(side="top",fill="x",padx=10,pady=(7,0))
         else: left.pack(side="left",fill="both",expand=True,padx=10,pady=7)
@@ -1310,12 +1032,6 @@ class App:
         l=tk.Label(left,text=helptext,bg=self.palette["panel2"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=560,justify="left"); l.pack(anchor="w",pady=(1,0)); left_labels.append(l)
         if key in DANGER_TEXT:
             l=tk.Label(left,text="CAUTION: "+DANGER_TEXT[key],bg=self.palette["panel2"],fg=self.palette["danger"],font=("Segoe UI",9,"bold"),wraplength=560,justify="left"); l.pack(anchor="w",pady=(2,0)); left_labels.append(l)
-        if key=="packPath" and getattr(self,"pack_overrides",{}) and self.cfg.get("_priorityMode","Pack Priority")!="Default Priority":
-            l=tk.Label(left,text=f"This pack specifies {len(self.pack_overrides)} setting(s) (see each one's own note below). Pack Priority is ON.",bg=self.palette["panel2"],fg=self.palette["accent2"],font=("Segoe UI",9,"bold"),wraplength=560,justify="left"); l.pack(anchor="w",pady=(2,0)); left_labels.append(l)
-        if key in getattr(self,"pack_overrides",{}) and self.cfg.get("_priorityMode","Pack Priority")!="Default Priority":
-            override_value=self.pack_overrides[key]
-            display_value=("ON" if truth(override_value) else "OFF") if KEY_TYPES.get(key)=="bool" else override_value
-            l=tk.Label(left,text=f"Pack default for this setting is {display_value}. Pack Priority is ON.",bg=self.palette["panel2"],fg=self.palette["accent2"],font=("Segoe UI",9,"bold"),wraplength=560,justify="left"); l.pack(anchor="w",pady=(2,0)); left_labels.append(l)
         right=tk.Frame(card,bg=self.palette["panel2"])
         if full_width: right.pack(side="top",fill="x",padx=10,pady=(4,10))
         else: right.pack(side="right",padx=10,pady=7)
@@ -1325,7 +1041,6 @@ class App:
         elif typ=="global_key": input_setter=self.add_global_key(right,key)
         elif typ=="pct": input_setter=self.add_percent(right,key)
         elif typ=="multiline": input_setter=self.add_multiline(right,key)
-        elif typ=="booru_sites": input_setter=self.add_site_checklist(right,key)
         else: input_setter=self.add_entry(right,key,typ)
         def set_row_enabled(enabled,_labels=left_labels,_input=input_setter):
             for lbl in _labels:
@@ -1373,11 +1088,9 @@ class App:
     def sync_setting(self,key,var,typ):
         """Write this one setting's current value into self.cfg immediately -
         not just at save time - so navigating away and back shows your last
-        edit, not your last save (previously the root cause of settings
-        appearing to silently revert when switching tabs without saving).
-        Also refreshes any dependent settings' grayed-out state. Mirrors
-        collect()'s per-type handling for a single key; collect() still runs
-        at save time too, as a redundant safety net."""
+        edit, not your last save. Also refreshes any dependent settings'
+        grayed-out state. Mirrors collect()'s per-type handling for a single
+        key; collect() still runs at save time too, as a safety net."""
         try:
             if typ=="bool":
                 value=1 if var.get() else 0
@@ -1391,7 +1104,7 @@ class App:
                 if value<0: return
                 self.cfg[key]=value
             elif typ=="signed_int":
-                self.cfg[key]=int(str(var.get()).strip())  # negative allowed - e.g. booru score thresholds
+                self.cfg[key]=int(str(var.get()).strip())  # negative allowed
             else:
                 self.cfg[key]=var.get()
         except (ValueError,tk.TclError):
@@ -1421,21 +1134,12 @@ class App:
         if typ=="edge_theme": combo.bind("<<ComboboxSelected>>",lambda e:self.edge_theme_changed(var.get()))
         elif typ=="hibernate": combo.bind("<<ComboboxSelected>>",lambda e:self.hibernate_changed(var.get()))
         elif typ=="corner": combo.bind("<<ComboboxSelected>>",lambda e:self.corner_changed(key,var.get()))
-        elif key=="_priorityMode": combo.bind("<<ComboboxSelected>>",lambda e:self.priority_changed(var.get()))
         else: combo.bind("<<ComboboxSelected>>",lambda e:self.sync_setting(key,var,typ))
         self.vars[key]=(var,typ)
         def set_enabled(enabled):
             try: combo.configure(state=("readonly" if enabled else "disabled"))
             except tk.TclError: pass
         return set_enabled
-
-    def priority_changed(self,value):
-        # Unlike most settings, this needs to take effect immediately (not
-        # just at save time) so the "Pack Priority is ON" notes elsewhere
-        # don't show a stale mode - switching this dropdown back and forth
-        # should make that text appear/disappear right away.
-        self.cfg["_priorityMode"]=value
-        self.render(self.current_section)
 
     def add_pack(self,parent,key):
         var=tk.StringVar(value=self.raw_value(key,"pack"))
@@ -1494,43 +1198,6 @@ class App:
             except tk.TclError: pass
         return set_enabled
 
-    def add_site_checklist(self,parent,key):
-        current={x.strip() for x in str(self.cfg.get(key,"")).split(",") if x.strip()}
-        grid=tk.Frame(parent,bg=self.palette["panel2"]); grid.pack(fill="x")
-        state={"enabled":True}
-        rows=[]  # (site, label_widget, BooleanVar)
-        def sync():
-            selected=sorted(site for site,_,var in rows if var.get())
-            self.cfg[key]=",".join(selected)
-        def make_flip(site,lbl,var):
-            def flip(*_):
-                if not state["enabled"]: return
-                var.set(not var.get())
-                lbl.configure(bg=self.palette["accent_dark"] if var.get() else self.palette["panel3"])
-                sync()
-            return flip
-        cols=6  # Now spans the full card width (see add_setting) instead of a narrow column, so this comfortably fits more per row
-        for i,site in enumerate(ALLOWED_BOORU_SITES):
-            var=tk.BooleanVar(value=site in current)
-            # Sites not yet rebuilt with the real scraper get dimmed text as a
-            # "not guaranteed working yet" reminder - still fully clickable
-            # (not disabled), since they might work fine and are worth
-            # testing; only the text color differs, nothing else.
-            text_color=self.palette["white"] if site in GELBOORU_FAMILY_SITES else self.palette["dim"]
-            lbl=tk.Label(grid,text=site,width=12,bg=self.palette["accent_dark"] if var.get() else self.palette["panel3"],fg=text_color,font=("Segoe UI",8,"bold"),cursor="hand2")
-            lbl.grid(row=i//cols,column=i%cols,padx=2,pady=2,sticky="w")
-            lbl.bind("<Button-1>",make_flip(site,lbl,var))
-            rows.append((site,lbl,var))
-        # Not a normal Variable-backed setting (no single Variable represents
-        # "which sites are checked") - self.cfg is kept current directly by
-        # sync() above on every click instead, same reasoning as add_multiline.
-        self.vars[key]=(None,"booru_sites")
-        def set_enabled(enabled):
-            state["enabled"]=enabled
-            for _,lbl,_ in rows:
-                lbl.configure(cursor="hand2" if enabled else "arrow")
-        return set_enabled
-
     def add_multiline(self,parent,key):
         text=tk.Text(parent,width=26,height=3,wrap="none",bg=self.palette["entry"],fg=self.palette["white"],insertbackground=self.palette["white"],relief="flat",highlightthickness=1,highlightbackground=self.palette["border"],font=("Segoe UI",10))
         text.insert("1.0",self.raw_value(key,"multiline")); text.pack()
@@ -1570,16 +1237,10 @@ class App:
     def pack_changed(self,value):
         self.cfg["packPath"]=self.pack_map.get(value)
         overrides=read_pack_overrides(self.cfg.get("packPath"))
-        pack_wins=self.cfg.get("_priorityMode","Pack Priority")!="Default Priority"
-        if overrides and pack_wins:
-            self.status.set(f"Pack selected: {value}. It specifies {len(overrides)} setting(s) - these will be written in when you Save.")
-        elif overrides:
-            self.status.set(f"Pack selected: {value}. It specifies some settings, but Priority is set to Default, so your saved settings are used instead.")
+        if overrides:
+            self.status.set(f"Pack selected: {value}. It specifies {len(overrides)} setting(s) - use Load Pack Configuration to apply them.")
         else:
             self.status.set(f"Pack selected: {value}. Save to keep it.")
-        # Always re-render so the "this pack overrides X" notes on individual
-        # settings, and the pack-conflict note under the intensity presets,
-        # reflect the new pack.
         self.render(self.current_section)
 
     def corner_changed(self,key,value):
@@ -1630,9 +1291,6 @@ class App:
     def manager_theme_changed(self,value):
         self.theme_name=value; self.palette=THEME_PALETTES[value]; self.cfg["_prettyConfigTheme"]=value; self.apply_manager_theme(); self.status.set(f"Manager appearance changed to {value}.")
 
-    def select_manager_theme(self):
-        pass
-
     def collect(self):
         for key,(var,typ) in self.vars.items():
             if typ=="bool":
@@ -1640,7 +1298,6 @@ class App:
                 self.cfg[key] = (1 - value) if key in INVERTED_BOOL_KEYS else value
             elif typ=="pct": self.cfg[key]=max(0,min(100,int(var.get())))
             elif typ=="multiline": pass  # Already kept current in self.cfg directly - see add_multiline
-            elif typ=="booru_sites": pass  # Already kept current in self.cfg directly - see add_site_checklist
             elif typ=="pack": self.cfg[key]=self.pack_map.get(var.get())
             elif typ=="corner": self.cfg[key]={"Top-Right":0,"Top-Left":1,"Bottom-Left":2,"Bottom-Right":3}.get(var.get(),0)
             elif typ=="global_key": self.cfg[key]=var.get()
@@ -1653,13 +1310,6 @@ class App:
             else: self.cfg[key]=var.get()
         self.cfg["_prettyConfigTheme"]=self.theme_name
         self.cfg["_configVersion"]=VERSION
-        # v21 has no runtime equivalent of a per-launch pack-priority merge
-        # (that's a v22-only main_edgeware.py feature). To give "Pack
-        # Priority" real effect here, bake the pack's own values into what
-        # gets saved - the same thing the old "Load Pack Configuration"
-        # button did, just automatically, every time you Save.
-        if self.cfg.get("_priorityMode","Pack Priority")!="Default Priority":
-            self.cfg.update(read_pack_overrides(self.cfg.get("packPath")))
 
     def save(self,quiet=False):
         try:
@@ -1691,10 +1341,30 @@ class App:
 
     def save_exit_run(self):
         if not self.save(True): return
+        warns=prelaunch_warnings(self.cfg)
+        if warns:
+            if not messagebox.askyesno(APP,"Heads up - things may not behave as you expect:\n\n- "+"\n- ".join(warns)+"\n\nSettings are saved. Run Edgeware anyway?"):
+                return
         try:
-            run_edgeware(self.cfg.get("packPath")); self.root.destroy()
+            proc=run_edgeware(self.cfg.get("packPath"))
         except Exception as e:
-            messagebox.showerror(APP,f"Settings were saved, but Edgeware could not be started.\n\n{e}")
+            messagebox.showerror(APP,f"Settings were saved, but Edgeware could not be started.\n\n{e}"); return
+        # Watch the first few seconds. A startup crash is otherwise invisible
+        # (no console under .pyw) and just looks like "no popups happened".
+        self.status.set("Starting Edgeware... checking it stays running.")
+        waited={"n":0}
+        def check():
+            code=proc.poll()
+            if code is not None:
+                messagebox.showerror(APP,f"Edgeware stopped right after starting (exit code {code}). This is why no popups appear.\n\nLast lines of the log:\n\n{read_run_log_tail()}\n\nFull log: {RUN_LOG}")
+                self.status.set(f"Edgeware crashed on start. See {RUN_LOG}")
+                return
+            waited["n"]+=1
+            if waited["n"]>=10:
+                self.root.destroy()   # still running after ~5s: started OK
+                return
+            self.root.after(500,check)
+        self.root.after(500,check)
 
     def import_pack_ui(self):
         name=import_pack(self.root)
@@ -1778,42 +1448,17 @@ class App:
             lambda n: f"Converted {n} WebP file(s) to GIF.",
         )
 
-    def convert_gif_ui(self):
-        self.refresh_packs(); current=self.cfg.get("packPath")
-        pack_dir=(PACKS/current) if current else None
-        if not pack_dir or not pack_dir.is_dir():
-            messagebox.showinfo(APP,"Select a pack first."); return
-        all_gifs=list(pack_dir.rglob("*.gif"))+list(pack_dir.rglob("*.GIF"))
-        files=[p for p in all_gifs if HYPNO_FOLDER_NAMES.isdisjoint(part.lower() for part in p.relative_to(pack_dir).parts[:-1])]
-        skipped=len(set(all_gifs))-len(set(files))
-        if not files:
-            msg="Every GIF in this pack is a hypno/subliminal asset and was left alone (see below)." if skipped else "No GIF files were found in the selected pack."
-            messagebox.showinfo(APP,msg); return
-        note=f"\n\n{skipped} GIF file(s) in hypno/subliminals folders will be left alone - Edgeware's hypno overlay can't play animated WebP yet." if skipped else ""
-        if not messagebox.askyesno("Convert GIF to WebP",f"This will convert {len(files)} GIF file(s) in the selected pack to WebP and delete each GIF only after its WebP is created successfully.\n\nThis changes the pack files permanently.{note}\n\nContinue?"): return
-        self.run_conversion_dialog(
-            "Converting GIF to WebP",
-            lambda progress,cancel: convert_gif_to_webp(pack_dir,progress,cancel),
-            lambda n: f"Converted {n} GIF file(s) to WebP.",
-        )
-
     def add_troubleshooting_tool(self):
         if self.current_section!="Troubleshooting": return
         # Tool card is added after settings; avoid duplicate by checking marker.
         if getattr(self,"tool_added",False): return
         self.tool_added=True
         card=tk.Frame(self.page,bg=self.palette["panel3"],highlightthickness=1,highlightbackground=self.palette["border"]); card.pack(fill="x",padx=14,pady=7)
-        tk.Label(card,text="WebP conversion",bg=self.palette["panel3"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w",padx=10,pady=(7,1))
-        tk.Label(card,text="This version of Edgeware sends every popup (image or hypno/subliminal overlay) through mpv, which can't play animated WebP anywhere - it shows as a black square. This tool converts a pack's animated WebP files to GIF, which plays correctly everywhere. Progress shown; originals removed only after their GIF is created successfully. (GIF-to-WebP isn't offered here, since it would reintroduce the black-square problem on this version.)",bg=self.palette["panel3"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=650,justify="left").pack(anchor="w",padx=10,pady=(0,5))
+        tk.Label(card,text="WebP to GIF conversion",bg=self.palette["panel3"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w",padx=10,pady=(7,1))
+        tk.Label(card,text="Edgeware v21 can show animated WebP files as a black square. This converts the selected pack's WebP files to GIF, and only removes each original after its GIF is created successfully.",bg=self.palette["panel3"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=650,justify="left").pack(anchor="w",padx=10,pady=(0,5))
         self.make_button(card,"Convert selected pack's WebP files to GIF",self.convert_webp_ui,primary=True).pack(anchor="w",padx=10,pady=(0,6))
         theme_btn=self.make_button(card,"Fix Edgeware theme background",self.fix_edgeware_theme_ui)
         theme_btn.pack(anchor="w",padx=10,pady=(0,8))
-
-        booru_card=tk.Frame(self.page,bg=self.palette["panel3"],highlightthickness=1,highlightbackground=self.palette["border"]); booru_card.pack(fill="x",padx=14,pady=7)
-        tk.Label(booru_card,text="Test Download Sites",bg=self.palette["panel3"],fg=self.palette["white"],font=("Segoe UI",10,"bold")).pack(anchor="w",padx=10,pady=(7,1))
-        tk.Label(booru_card,text=f"Makes one real, minimal request to all {len(ALLOWED_BOORU_SITES)} known sites (not just the ones currently checked), using your saved tags/min score/API key - both the rebuilt sites and the dimmed \"not guaranteed yet\" ones. Shows which work, which return nothing for your tags, and which fail outright with the actual error - useful for spotting when a site starts needing something new (like Gelbooru's auth requirement).",bg=self.palette["panel3"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=650,justify="left").pack(anchor="w",padx=10,pady=(0,5))
-        self.make_button(booru_card,"Test all download sites",self.test_booru_sites_dialog,primary=True).pack(anchor="w",padx=10,pady=(0,8))
-
 
     def fix_edgeware_theme_ui(self):
         if not messagebox.askyesno(APP,"Apply the Edgeware theme background fix?\n\nThis makes popup windows use the selected Edgeware theme background instead of a hard-coded black background. A backup of popup.py will be kept before changing it."):
@@ -1825,110 +1470,14 @@ class App:
         except Exception as e:
             messagebox.showerror(APP,str(e))
 
-    def test_booru_sites_dialog(self):
-        if getattr(self,"booru_test_running",False): return
-        self.booru_test_running=True
-
-        src_path=str(HERE/"src")
-        if src_path not in sys.path: sys.path.insert(0,src_path)
-        try:
-            import asyncio as _asyncio
-            import booru as _booru_pkg
-            from features import booru_scraper as _booru_scraper
-        except Exception as e:
-            self.booru_test_running=False
-            messagebox.showerror(APP,f"Couldn't load the site-testing code.\n\n{e}")
-            return
-
-        tags=str(self.cfg.get("tagList","") or "all")
-        min_score=int(self.cfg.get("booruMinScore",-5) or -5)
-        api_key=str(self.cfg.get("booruApiKey","") or "")
-        user_id=str(self.cfg.get("booruUserId","") or "")
-        sites=ALLOWED_BOORU_SITES
-
-        cancel=threading.Event()
-        q=Queue()
-
-        win=tk.Toplevel(self.root)
-        win.title("Test Download Sites")
-        win.geometry("680x540")
-        win.transient(self.root); win.grab_set()
-        win.configure(bg=self.palette["bg"])
-        tk.Label(win,text="Test Download Sites",bg=self.palette["bg"],fg=self.palette["white"],font=("Segoe UI",14,"bold")).pack(anchor="w",padx=18,pady=(16,3))
-        tk.Label(win,text=f'Testing all {len(sites)} sites with tags "{tags}" (min score {min_score}). One real request per site - this can take a little while.',bg=self.palette["bg"],fg=self.palette["muted"],font=("Segoe UI",9),wraplength=640,justify="left").pack(anchor="w",padx=18,pady=(0,8))
-
-        log_frame=tk.Frame(win,bg=self.palette["bg"]); log_frame.pack(fill="both",expand=True,padx=18)
-        log_text=tk.Text(log_frame,bg=self.palette["panel"],fg=self.palette["white"],font=("Consolas",9),wrap="word",state="disabled",height=18,relief="flat")
-        log_scroll=ttk.Scrollbar(log_frame,orient="vertical",command=log_text.yview,style="Pretty.Vertical.TScrollbar")
-        log_text.configure(yscrollcommand=log_scroll.set)
-        log_text.pack(side="left",fill="both",expand=True); log_scroll.pack(side="right",fill="y")
-        log_text.tag_configure("ok",foreground="#4CD787")
-        log_text.tag_configure("empty",foreground="#E8C547")
-        log_text.tag_configure("fail",foreground="#E8546B")
-
-        def append_line(text,tag=None):
-            log_text.configure(state="normal")
-            log_text.insert("end",text+"\n",tag or ())
-            log_text.see("end")
-            log_text.configure(state="disabled")
-
-        status_label=tk.Label(win,text="Starting...",bg=self.palette["bg"],fg=self.palette["dim"],font=("Segoe UI",9))
-        status_label.pack(anchor="w",padx=18,pady=(6,0))
-
-        btn_row=tk.Frame(win,bg=self.palette["bg"]); btn_row.pack(pady=12)
-        cancel_btn=self.make_button(btn_row,"Cancel",cancel.set); cancel_btn.pack(side="left",padx=4)
-        save_btn=self.make_button(btn_row,"Save Full Log",lambda:None,primary=True); save_btn.config(state="disabled"); save_btn.pack(side="left",padx=4)
-
-        def worker():
-            results=[]
-            for i,site in enumerate(sites,1):
-                if cancel.is_set():
-                    q.put({"stage":"cancelled"}); return
-                q.put({"stage":"progress","site":site,"index":i,"total":len(sites)})
-                kind,detail=_test_one_booru_site(site,tags,min_score,api_key,user_id,_booru_scraper,_booru_pkg,_asyncio)
-                results.append((site,kind,detail))
-                q.put({"stage":"result","site":site,"kind":kind,"detail":detail})
-            q.put({"stage":"done","results":results})
-        threading.Thread(target=worker,daemon=True).start()
-
-        def finish_save(results):
-            try:
-                path=_save_booru_test_log(results,tags,min_score)
-                messagebox.showinfo(APP,f"Saved to:\n{path}")
-            except Exception as e:
-                messagebox.showerror(APP,str(e))
-
-        def poll():
-            try:
-                while True:
-                    info=q.get_nowait()
-                    stage=info.get("stage")
-                    if stage=="progress":
-                        status_label.config(text=f'Testing {info["site"]}... ({info["index"]}/{info["total"]})')
-                    elif stage=="result":
-                        marker={"ok":"[ OK  ]","empty":"[EMPTY]","fail":"[FAIL ]"}[info["kind"]]
-                        append_line(f'{marker} {info["site"]:14} {info["detail"]}',info["kind"])
-                    elif stage=="cancelled":
-                        status_label.config(text="Cancelled.")
-                        cancel_btn.config(state="disabled")
-                        self.booru_test_running=False
-                        return
-                    elif stage=="done":
-                        results=info["results"]
-                        ok_n=sum(1 for _,kind,_ in results if kind=="ok")
-                        status_label.config(text=f"Done - {ok_n}/{len(results)} sites returned a result.")
-                        cancel_btn.config(state="disabled")
-                        save_btn.config(state="normal",command=lambda:finish_save(results))
-                        self.booru_test_running=False
-                        return
-            except Empty:
-                pass
-            if not cancel.is_set(): win.after(80,poll)
-        poll()
-
-        def on_close():
-            cancel.set(); self.booru_test_running=False; win.destroy()
-        win.protocol("WM_DELETE_WINDOW",on_close)
+    def view_run_log(self):
+        if not RUN_LOG.is_file():
+            messagebox.showinfo(APP,"No run log yet. It is created when you use Save, Exit, and Run."); return
+        win=tk.Toplevel(self.root); win.title("Last Edgeware run log"); win.geometry("760x420"); win.configure(bg=self.palette["bg"])
+        txt=tk.Text(win,wrap="none",bg=self.palette["entry"],fg=self.palette["white"],font=("Consolas",9),relief="flat")
+        txt.pack(fill="both",expand=True,padx=8,pady=8)
+        txt.insert("1.0",read_run_log_tail(400) or "(empty - nothing was printed, which usually means no startup crash)")
+        txt.configure(state="disabled")
 
     def open_root(self):
         try:
@@ -1967,7 +1516,65 @@ def _render(self,section):
     if section=="Troubleshooting": self.add_troubleshooting_tool()
 App.render=_render
 
+# Import name -> what it's needed for, for every third-party package Edgeware
+# actually imports somewhere (config.pyw, config_original.pyw's interface, or
+# main_edgeware.py). Checked with find_spec (cheap - doesn't run the module),
+# not by actually importing, since config.pyw's own UI doesn't need most of
+# these itself.
+REQUIRED_PACKAGES = {
+    "mpv": "video/audio playback",
+    "PIL": "image handling",
+    "requests": "web features",
+    "desktop_notifier": "desktop notifications",
+    "pystray": "the system tray icon",
+    "pynput": "the global panic hotkey",
+    "pyglet": "audio playback",
+    "pypresence": "Discord Rich Presence",
+    "screeninfo": "multi-monitor support",
+    "filetype": "media type detection",
+    "videoprops": "video file inspection",
+    "voluptuous": "config validation",
+    "booru": "booru image downloading",
+    "tkinterweb": "in-app web content",
+    "ttkwidgets": "the mood checklist",
+    "tktooltip": "tooltips",
+}
+if sys.platform == "win32":
+    REQUIRED_PACKAGES["win32com"] = "Windows-specific integration"
+
+
+def check_setup_requirements():
+    """Warn (non-fatally - editing settings still works either way) if this
+    looks like a fresh checkout that never had EdgewareSetup.bat (or
+    `pip install -r requirements.txt`) run against it, so a new user finds
+    out now instead of from an unexplained crash the first time they hit
+    Run."""
+    missing = [f"{name} ({REQUIRED_PACKAGES[name]})" for name in REQUIRED_PACKAGES if importlib.util.find_spec(name) is None]
+    missing_mpv_dll = sys.platform == "win32" and not (DATA / "libmpv-2.dll").is_file()
+    if not missing and not missing_mpv_dll:
+        return
+
+    lines = []
+    if missing:
+        lines.append("Missing Python packages:\n  - " + "\n  - ".join(sorted(missing)))
+    if missing_mpv_dll:
+        lines.append("Missing data/libmpv-2.dll (needed for video/audio playback).")
+    fix = "Run EdgewareSetup.bat in this folder to install everything automatically." if sys.platform == "win32" else "Run: pip install -r requirements.txt"
+
+    root=tk.Tk(); root.withdraw()
+    messagebox.showwarning(APP, "Edgeware doesn't look fully set up yet:\n\n" + "\n".join(lines) + f"\n\n{fix}\n\nYou can still browse and change settings, but Run will likely fail until this is fixed.")
+    root.destroy()
+
+
 if __name__=="__main__":
+    if sys.version_info < (3, 12):
+        # Matches EdgewareSetup.bat's check - Edgeware needs 3.12+, and
+        # someone opening config.pyw directly would otherwise get no
+        # warning until something obscure broke.
+        _version_root=tk.Tk(); _version_root.withdraw()
+        messagebox.showwarning(APP, f"You're running Python {sys.version_info.major}.{sys.version_info.minor}, but Edgeware needs 3.12 or newer. Things may not work correctly until you upgrade.")
+        _version_root.destroy()
+    check_setup_requirements()
     try: App().run()
     except Exception as e:
         root=tk.Tk(); root.withdraw(); messagebox.showerror(APP,f"Could not start the configuration manager.\n\n{e}"); root.destroy()
